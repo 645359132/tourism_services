@@ -6,6 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db.base import Base
 from app.db.models.role import Role
 from app.db.models.seed_record import SeedRecord
+from app.db.models.ticketing import (
+    DynamicPriceRule,
+    TicketInventory,
+    TicketSlot,
+    TicketType,
+)
 from app.db.models.user import User
 from app.scripts.seed import DEMO_PASSWORD, seed_database
 
@@ -30,13 +36,21 @@ async def test_foundation_seed_is_idempotent() -> None:
         seed_count = await session.scalar(select(func.count()).select_from(SeedRecord))
         role_count = await session.scalar(select(func.count()).select_from(Role))
         user_count = await session.scalar(select(func.count()).select_from(User))
+        ticket_type_count = await session.scalar(select(func.count()).select_from(TicketType))
+        slot_count = await session.scalar(select(func.count()).select_from(TicketSlot))
+        inventory_count = await session.scalar(select(func.count()).select_from(TicketInventory))
+        price_rule_count = await session.scalar(select(func.count()).select_from(DynamicPriceRule))
         second_hash = await session.scalar(
             select(User.password_hash).where(User.username == "admin_demo")
         )
 
-    assert seed_count == 2
+    assert seed_count == 3
     assert role_count == 4
     assert user_count == 4
+    assert ticket_type_count == 4
+    assert slot_count == 84
+    assert inventory_count == 84
+    assert price_rule_count == 2
     assert first_hash == second_hash
     assert first_hash != DEMO_PASSWORD
     await engine.dispose()

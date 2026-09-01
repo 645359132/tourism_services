@@ -2,6 +2,7 @@
 .coverage
 .pytest_cache/
 .pytest-tmp/
+.pytest-*/
 .ruff_cache/
 .venv/
 __pycache__/

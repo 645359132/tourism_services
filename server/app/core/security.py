@@ -12,6 +12,8 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 from app.core.config import Settings
 
+TokenType = Literal["access", "refresh", "ticket_qr"]
+
 password_hasher = PasswordHasher(
     time_cost=2,
     memory_cost=19_456,
@@ -46,7 +48,7 @@ def password_needs_rehash(encoded_hash: str) -> bool:
 def _encode_token(
     *,
     subject: UUID,
-    token_type: Literal["access", "refresh"],
+    token_type: TokenType,
     expires_delta: timedelta,
     settings: Settings,
     extra_claims: dict[str, Any] | None = None,
@@ -105,10 +107,31 @@ def create_refresh_token(
     )
 
 
+def create_ticket_qr(
+    *,
+    ticket_id: UUID,
+    ticket_version: int,
+    slot_id: UUID,
+    settings: Settings,
+) -> tuple[str, datetime]:
+    token, expires_at, _ = _encode_token(
+        subject=ticket_id,
+        token_type="ticket_qr",
+        expires_delta=timedelta(seconds=settings.ticket_qr_ttl_seconds),
+        settings=settings,
+        extra_claims={
+            "purpose": "gate_validation",
+            "sid": str(slot_id),
+            "ver": ticket_version,
+        },
+    )
+    return token, expires_at
+
+
 def decode_token(
     token: str,
     *,
-    expected_type: Literal["access", "refresh"],
+    expected_type: TokenType,
     settings: Settings,
     verify_expiration: bool = True,
 ) -> dict[str, Any]:

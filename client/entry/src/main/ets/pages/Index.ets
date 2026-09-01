@@ -8,6 +8,7 @@ import { HomePage } from './HomePage';
 import { MallPage } from './MallPage';
 import { ProfilePage } from './ProfilePage';
 import { TripPage } from './TripPage';
+import { TicketPage } from './TicketPage';
 
 @Entry
 @Component
@@ -18,6 +19,7 @@ struct Index {
   @State loggedIn: boolean = false;
   @State displayName: string = '游客';
   @State isTablet: boolean = false;
+  @State showTicketing: boolean = false;
 
   aboutToAppear(): void {
     const authStore: AuthStore = AuthStore.getInstance();
@@ -26,6 +28,9 @@ struct Index {
   }
 
   private currentTitle(): string {
+    if (this.showTicketing) {
+      return '门票预约';
+    }
     if (this.selected === MainDestination.GUIDE) {
       return '智慧导览';
     }
@@ -43,7 +48,17 @@ struct Index {
 
   @Builder
   private pageContent() {
-    if (this.selected === MainDestination.GUIDE) {
+    if (this.showTicketing) {
+      TicketPage({
+        loggedIn: this.loggedIn,
+        onBack: (): void => {
+          this.showTicketing = false;
+        },
+        onLoginTap: (): void => {
+          this.showLogin = true;
+        }
+      })
+    } else if (this.selected === MainDestination.GUIDE) {
       GuidePage()
     } else if (this.selected === MainDestination.TRIP) {
       TripPage()
@@ -58,14 +73,19 @@ struct Index {
         }
       })
     } else {
-      HomePage({ contentState: $contentState })
+      HomePage({
+        contentState: $contentState,
+        onTicketTap: (): void => {
+          this.showTicketing = true;
+        }
+      })
     }
   }
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
       Row() {
-        if (this.isTablet) {
+        if (this.isTablet && !this.showTicketing) {
           SideNavigation({ selected: $selected })
         }
         Column() {
@@ -82,7 +102,7 @@ struct Index {
           }
           .layoutWeight(1)
           .width('100%')
-          if (!this.isTablet) {
+          if (!this.isTablet && !this.showTicketing) {
             BottomNavigation({ selected: $selected })
           }
         }

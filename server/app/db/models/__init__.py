@@ -4,12 +4,34 @@ from app.db.models.preference import TouristPreference
 from app.db.models.refresh_session import RefreshSession
 from app.db.models.role import Role, UserRole
 from app.db.models.seed_record import SeedRecord
+from app.db.models.ticketing import (
+    DynamicPriceRule,
+    ElectronicTicket,
+    RefundRequest,
+    RescheduleRequest,
+    TicketInventory,
+    TicketOrder,
+    TicketOrderItem,
+    TicketSlot,
+    TicketType,
+    TicketValidation,
+)
 from app.db.models.user import User
 
 __all__ = [
+    "DynamicPriceRule",
+    "ElectronicTicket",
     "RefreshSession",
+    "RefundRequest",
+    "RescheduleRequest",
     "Role",
     "SeedRecord",
+    "TicketInventory",
+    "TicketOrder",
+    "TicketOrderItem",
+    "TicketSlot",
+    "TicketType",
+    "TicketValidation",
     "TouristPreference",
     "User",
     "UserRole",

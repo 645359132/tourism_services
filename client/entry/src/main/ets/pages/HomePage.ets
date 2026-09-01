@@ -4,6 +4,7 @@ import { ContentState } from '../models/AppModels';
 @Component
 export struct HomePage {
   @Link contentState: ContentState;
+  onTicketTap: () => void = (): void => {};
 
   @Builder
   private quickService(icon: string, title: string, caption: string) {
@@ -24,6 +25,11 @@ export struct HomePage {
     .justifyContent(FlexAlign.Center)
     .borderRadius(18)
     .backgroundColor($r('app.color.surface'))
+    .onClick(() => {
+      if (title === '门票预约') {
+        this.onTicketTap();
+      }
+    })
   }
 
   @Builder

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     jwt_issuer: str = "smart-tourism-service"
     jwt_audience: str = "smart-tourism-client"
     enable_demo_accounts: bool = False
+    ticket_order_reservation_minutes: int = Field(default=15, ge=1, le=120)
+    ticket_quote_ttl_seconds: int = Field(default=300, ge=30, le=1800)
+    ticket_qr_ttl_seconds: int = Field(default=300, ge=30, le=900)
+    ticket_refund_cutoff_hours: int = Field(default=24, ge=0, le=168)
 
     @field_validator("database_url", mode="before")
     @classmethod

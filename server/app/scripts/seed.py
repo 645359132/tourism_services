@@ -7,6 +7,8 @@ Run after ``alembic upgrade head`` with ``uv run tourism-seed`` or
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -16,11 +18,18 @@ from app.core.security import hash_password
 from app.db.models.preference import TouristPreference
 from app.db.models.role import Role, UserRole
 from app.db.models.seed_record import SeedRecord
+from app.db.models.ticketing import (
+    DynamicPriceRule,
+    TicketInventory,
+    TicketSlot,
+    TicketType,
+)
 from app.db.models.user import User
 from app.db.session import dispose_database, get_session_factory
 
 FOUNDATION_SEED_KEY = "foundation-v1"
 AUTH_DEMO_SEED_KEY = "auth-demo-v1"
+TICKETING_SEED_KEY = "ticketing-demo-v1"
 DEMO_PASSWORD = "Tourism123!"
 ROLE_DESCRIPTIONS = {
     "tourist": "Visitor using tourism discovery and personalization features",
@@ -33,6 +42,17 @@ DEMO_ACCOUNTS = (
     ("merchant_demo", "商户演示账号", "merchant"),
     ("support_demo", "客服演示账号", "support"),
     ("admin_demo", "管理员演示账号", "admin"),
+)
+TICKET_TYPES = (
+    ("adult", "成人票", "成人游客", "标准成人景区入园票", 12_000, 1, 100),
+    ("child", "儿童票", "符合景区儿童政策的游客", "儿童优惠入园票", 6_000, 1, 60),
+    ("student", "学生票", "持有效学生证的游客", "学生优惠入园票", 8_000, 1, 60),
+    ("family", "家庭票", "两名成人及两名儿童", "四人家庭组合入园票", 30_000, 4, 20),
+)
+SLOT_WINDOWS = (
+    (time(9, 0), time(12, 0)),
+    (time(12, 0), time(15, 0)),
+    (time(15, 0), time(18, 0)),
 )
 
 
@@ -109,6 +129,96 @@ async def seed_database(
                 SeedRecord(
                     key=AUTH_DEMO_SEED_KEY,
                     description="Explicitly enabled local authentication demos initialized",
+                )
+            )
+            inserted = True
+
+        ticketing_seed = await session.get(SeedRecord, TICKETING_SEED_KEY)
+        if ticketing_seed is None:
+            ticket_types: dict[str, tuple[TicketType, int]] = {}
+            for (
+                code,
+                name,
+                audience,
+                description,
+                base_price_cents,
+                admission_count,
+                capacity,
+            ) in TICKET_TYPES:
+                ticket_type = await session.scalar(
+                    select(TicketType).where(TicketType.code == code)
+                )
+                if ticket_type is None:
+                    ticket_type = TicketType(
+                        code=code,
+                        name=name,
+                        audience=audience,
+                        description=description,
+                        base_price_cents=base_price_cents,
+                        admission_count=admission_count,
+                        is_active=True,
+                    )
+                    session.add(ticket_type)
+                    await session.flush()
+                ticket_types[code] = (ticket_type, capacity)
+
+            first_visit_date = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=1)
+            for day_offset in range(7):
+                visit_date = first_visit_date + timedelta(days=day_offset)
+                for ticket_type, capacity in ticket_types.values():
+                    for start_time, end_time in SLOT_WINDOWS:
+                        slot = await session.scalar(
+                            select(TicketSlot).where(
+                                TicketSlot.ticket_type_id == ticket_type.id,
+                                TicketSlot.visit_date == visit_date,
+                                TicketSlot.start_time == start_time,
+                                TicketSlot.end_time == end_time,
+                            )
+                        )
+                        if slot is None:
+                            slot = TicketSlot(
+                                ticket_type_id=ticket_type.id,
+                                visit_date=visit_date,
+                                start_time=start_time,
+                                end_time=end_time,
+                                is_active=True,
+                            )
+                            slot.inventory = TicketInventory(
+                                capacity=capacity,
+                                reserved=0,
+                                sold=0,
+                            )
+                            session.add(slot)
+
+            price_rules = (
+                DynamicPriceRule(
+                    name="Weekend demand adjustment",
+                    rule_type="weekend",
+                    adjustment_bps=2_000,
+                    weekend_only=True,
+                    priority=10,
+                    is_active=True,
+                ),
+                DynamicPriceRule(
+                    name="High occupancy adjustment",
+                    rule_type="occupancy",
+                    adjustment_bps=1_500,
+                    min_occupancy_bps=7_000,
+                    priority=20,
+                    is_active=True,
+                ),
+            )
+            for price_rule in price_rules:
+                exists = await session.scalar(
+                    select(DynamicPriceRule).where(DynamicPriceRule.name == price_rule.name)
+                )
+                if exists is None:
+                    session.add(price_rule)
+
+            session.add(
+                SeedRecord(
+                    key=TICKETING_SEED_KEY,
+                    description="Ticket catalog, seven-day slots, inventory, and demo pricing",
                 )
             )
             inserted = True

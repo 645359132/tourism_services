@@ -7,8 +7,8 @@
 | 1. 仓库基线 | 已完成 | `main` 基线提交 `9056088`；敏感信息扫描零命中；已切换 `feat/smart-tourism-mvp` |
 | 2. FastAPI 与持久化基础 | 已完成 | uv sync；Alembic 重复升级；seed 重复运行；Ruff 通过；pytest 10 passed/79%；`/health`、`/docs`、Compose 配置通过 |
 | 3. 认证权限与客户端应用壳 | 已完成 | JWT/RBAC/refresh 重放防护；真实登录 smoke；server pytest 29 passed/83%；客户端业务测试 5 passed；debug HAP 构建通过 |
-| 4. 门票交易纵向切片 | 进行中 | 正在实现原子库存、幂等订单、电子票与退改闭环 |
-| 5. 导览、人流与行程智能 | 待开始 |  |
+| 4. 门票交易纵向切片 | 已完成 | 原子库存/动态价/幂等订单/支付/QRCode/核验/退款/改签；server pytest 43 passed/71%；客户端 9 tests passed；真实 REST 与 HAP 通过 |
+| 5. 导览、人流与行程智能 | 进行中 | 正在实现人流 WebSocket、规则行程、避堵与冲突优化 |
 | 6. 项目排队与餐住预约 | 待开始 |  |
 | 7. 商城、客服、协作与无障碍 | 待开始 |  |
 | 8. 离线应急与数字护照 | 待开始 |  |
