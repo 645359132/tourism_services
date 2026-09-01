@@ -4,6 +4,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.base import Base
+from app.db.models.commerce import (
+    Campaign,
+    PointAccount,
+    PointLedgerEntry,
+    Product,
+    ProductInventory,
+    Reward,
+    ShopCategory,
+)
+from app.db.models.engagement import FAQ, FacilityPOI
 from app.db.models.guide import (
     Attraction,
     CrowdSnapshot,
@@ -78,11 +88,26 @@ async def test_foundation_seed_is_idempotent() -> None:
         schedule_lock_count = await session.scalar(
             select(func.count()).select_from(UserScheduleLock)
         )
+        category_count = await session.scalar(select(func.count()).select_from(ShopCategory))
+        product_count = await session.scalar(select(func.count()).select_from(Product))
+        product_inventory_count = await session.scalar(
+            select(func.count()).select_from(ProductInventory)
+        )
+        campaign_count = await session.scalar(select(func.count()).select_from(Campaign))
+        reward_count = await session.scalar(select(func.count()).select_from(Reward))
+        faq_count = await session.scalar(select(func.count()).select_from(FAQ))
+        facility_count = await session.scalar(select(func.count()).select_from(FacilityPOI))
+        point_account_count = await session.scalar(select(func.count()).select_from(PointAccount))
+        welcome_ledger_count = await session.scalar(
+            select(func.count())
+            .select_from(PointLedgerEntry)
+            .where(PointLedgerEntry.source_type == "WELCOME")
+        )
         second_hash = await session.scalar(
             select(User.password_hash).where(User.username == "admin_demo")
         )
 
-    assert seed_count == 5
+    assert seed_count == 6
     assert role_count == 4
     assert user_count == 4
     assert ticket_type_count == 4
@@ -102,6 +127,15 @@ async def test_foundation_seed_is_idempotent() -> None:
     assert shared_bucket_count == 121
     assert queue_counter_count == 3
     assert schedule_lock_count == 4
+    assert category_count == 3
+    assert product_count == 4
+    assert product_inventory_count == 4
+    assert campaign_count == 1
+    assert reward_count == 3
+    assert faq_count == 4
+    assert facility_count == 4
+    assert point_account_count == 4
+    assert welcome_ledger_count == 4
     assert first_hash == second_hash
     assert first_hash != DEMO_PASSWORD
     await engine.dispose()

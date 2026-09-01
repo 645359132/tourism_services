@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     queue_publish_interval_seconds: float = Field(default=15.0, ge=0.1, le=3600)
     ws_ticket_ttl_seconds: int = Field(default=60, ge=10, le=300)
     fastpass_valid_minutes: int = Field(default=60, ge=5, le=240)
+    shop_order_reservation_minutes: int = Field(default=15, ge=1, le=120)
 
     @field_validator("database_url", mode="before")
     @classmethod

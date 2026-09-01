@@ -11,29 +11,30 @@ const MAIN_NAV_ITEMS: NavigationItem[] = [
 @Component
 export struct BottomNavigation {
   @Link selected: MainDestination;
+  @Prop largeText: boolean = false;
 
   build() {
     Row() {
       ForEach(MAIN_NAV_ITEMS, (item: NavigationItem) => {
         Column({ space: 3 }) {
           Text(item.icon)
-            .fontSize(19)
+            .fontSize(this.largeText ? 23 : 19)
             .fontColor(this.selected === item.id ? $r('app.color.primary') : $r('app.color.text_secondary'))
           Text(item.label)
-            .fontSize(11)
+            .fontSize(this.largeText ? 14 : 11)
             .fontWeight(this.selected === item.id ? FontWeight.Medium : FontWeight.Regular)
             .fontColor(this.selected === item.id ? $r('app.color.primary') : $r('app.color.text_secondary'))
         }
         .justifyContent(FlexAlign.Center)
         .layoutWeight(1)
-        .height(60)
+        .height(this.largeText ? 70 : 60)
         .onClick(() => {
           this.selected = item.id;
         })
       }, (item: NavigationItem) => item.id.toString())
     }
     .width('100%')
-    .height(60)
+    .height(this.largeText ? 70 : 60)
     .backgroundColor($r('app.color.surface'))
     .border({ width: { top: 1 }, color: $r('app.color.divider') })
   }
@@ -42,26 +43,27 @@ export struct BottomNavigation {
 @Component
 export struct SideNavigation {
   @Link selected: MainDestination;
+  @Prop largeText: boolean = false;
 
   build() {
     Column({ space: 8 }) {
       Text('云游')
-        .fontSize(20)
+        .fontSize(this.largeText ? 25 : 20)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.primary'))
         .margin({ top: 22, bottom: 18 })
       ForEach(MAIN_NAV_ITEMS, (item: NavigationItem) => {
         Row({ space: 12 }) {
           Text(item.icon)
-            .fontSize(20)
+            .fontSize(this.largeText ? 23 : 20)
             .fontColor(this.selected === item.id ? $r('app.color.primary') : $r('app.color.text_secondary'))
           Text(item.label)
-            .fontSize(15)
+            .fontSize(this.largeText ? 18 : 15)
             .fontWeight(this.selected === item.id ? FontWeight.Bold : FontWeight.Regular)
             .fontColor(this.selected === item.id ? $r('app.color.primary') : $r('app.color.text_secondary'))
         }
-        .width(116)
-        .height(48)
+        .width(this.largeText ? 132 : 116)
+        .height(this.largeText ? 56 : 48)
         .padding({ left: 16 })
         .borderRadius(14)
         .backgroundColor(this.selected === item.id ? $r('app.color.surface_tint') : Color.Transparent)
@@ -71,7 +73,7 @@ export struct SideNavigation {
       }, (item: NavigationItem) => item.id.toString())
     }
     .height('100%')
-    .width(144)
+    .width(this.largeText ? 164 : 144)
     .alignItems(HorizontalAlign.Center)
     .backgroundColor($r('app.color.surface'))
     .border({ width: { right: 1 }, color: $r('app.color.divider') })

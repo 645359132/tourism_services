@@ -17,6 +17,7 @@ import { NetworkResult } from '../network/HttpClient';
 import { GuideService } from '../network/services/GuideService';
 import { buildCrowdAlternative, shouldAcceptCrowdSequence } from '../utils/GuideRules';
 import { ContentState } from '../models/AppModels';
+import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
 
 @Component
 export struct GuidePage {
@@ -46,6 +47,9 @@ export struct GuidePage {
   private crowdSocket: CrowdSocket | null = null;
 
   aboutToAppear(): void {
+    const settings: AccessibilitySettings = AccessibilityStore.getInstance().getSettings();
+    this.wheelchair = settings.wheelchair;
+    this.stroller = settings.stroller;
     this.loadAll();
     this.startCrowdSocket();
   }
@@ -437,10 +441,12 @@ export struct GuidePage {
               Text('轮椅路线').fontColor($r('app.color.text_primary')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.wheelchair }).onChange((value: boolean) => {
                 this.wheelchair = value;
+                AccessibilityStore.getInstance().setWheelchair(value);
               })
               Text('亲子推车').fontColor($r('app.color.text_primary')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.stroller }).onChange((value: boolean) => {
                 this.stroller = value;
+                AccessibilityStore.getInstance().setStroller(value);
               })
             }
             .width('100%')

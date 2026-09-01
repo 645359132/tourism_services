@@ -17,6 +17,7 @@ from app.core.middleware import RequestContextMiddleware
 from app.db.session import dispose_database, get_session_factory
 from app.realtime.crowd import ConnectionHub, CrowdPublisher
 from app.realtime.queues import QueueConnectionHub, QueuePublisher, QueueTicketStore
+from app.realtime.support import SupportConnectionHub, SupportTicketStore
 
 
 @asynccontextmanager
@@ -63,6 +64,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hub=application.state.queue_hub,
         session_factory_provider=get_session_factory,
         interval_seconds=resolved_settings.queue_publish_interval_seconds,
+    )
+    application.state.support_hub = SupportConnectionHub()
+    application.state.support_tickets = SupportTicketStore(
+        ttl_seconds=resolved_settings.ws_ticket_ttl_seconds,
     )
 
     register_exception_handlers(application)

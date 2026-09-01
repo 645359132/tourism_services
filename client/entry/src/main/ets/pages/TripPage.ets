@@ -12,6 +12,7 @@ import { ApiErrorCode, ApiErrorInfo } from '../network/ApiError';
 import { NetworkResult } from '../network/HttpClient';
 import { ItineraryService } from '../network/services/ItineraryService';
 import { AppStore } from '../stores/AppStore';
+import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
 import {
   GuideRuleResult,
   ReplanAssessment,
@@ -40,6 +41,11 @@ export struct TripPage {
   @State operationMessage: string = '';
   @State requireLogin: boolean = false;
   private service: ItineraryService = new ItineraryService();
+
+  aboutToAppear(): void {
+    const settings: AccessibilitySettings = AccessibilityStore.getInstance().getSettings();
+    this.accessible = settings.wheelchair || settings.stroller;
+  }
 
   private syncCurrentItinerary(value: Itinerary): void {
     AppStore.getInstance().setCurrentItinerary(value.id, value.revision);
@@ -354,6 +360,15 @@ export struct TripPage {
                 .selectedColor($r('app.color.primary'))
                 .onChange((value: boolean) => {
                   this.accessible = value;
+                  if (value) {
+                    const settings: AccessibilitySettings = AccessibilityStore.getInstance().getSettings();
+                    if (!settings.wheelchair && !settings.stroller) {
+                      AccessibilityStore.getInstance().setWheelchair(true);
+                    }
+                  } else {
+                    AccessibilityStore.getInstance().setWheelchair(false);
+                    AccessibilityStore.getInstance().setStroller(false);
+                  }
                 })
             }
           }

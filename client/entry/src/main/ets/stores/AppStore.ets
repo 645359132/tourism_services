@@ -6,6 +6,7 @@ export class AppStore {
   private contentState: ContentState = ContentState.CONTENT;
   private currentItineraryId: string = '';
   private currentItineraryRevision: number = 0;
+  private currentGroupId: string = '';
 
   static getInstance(): AppStore {
     return AppStore.instance;
@@ -47,5 +48,17 @@ export class AppStore {
 
   getCurrentItineraryRevision(): number {
     return this.currentItineraryRevision;
+  }
+
+  setCurrentGroupId(groupId: string): void {
+    this.currentGroupId = groupId;
+  }
+
+  hasCurrentGroup(): boolean {
+    return this.currentGroupId.length > 0;
+  }
+
+  getCurrentGroupId(): string {
+    return this.currentGroupId;
   }
 }

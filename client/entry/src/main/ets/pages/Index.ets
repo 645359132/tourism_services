@@ -10,6 +10,7 @@ import { ProfilePage } from './ProfilePage';
 import { TripPage } from './TripPage';
 import { TicketPage } from './TicketPage';
 import { BookingPage } from './BookingPage';
+import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
 
 @Entry
 @Component
@@ -23,11 +24,16 @@ struct Index {
   @State showTicketing: boolean = false;
   @State showBooking: boolean = false;
   @State bookingInitialSection: number = 0;
+  @State largeText: boolean = false;
+  @State highContrast: boolean = false;
 
   aboutToAppear(): void {
     const authStore: AuthStore = AuthStore.getInstance();
     this.loggedIn = authStore.isLoggedIn();
     this.displayName = authStore.getDisplayName();
+    const accessibility: AccessibilitySettings = AccessibilityStore.getInstance().getSettings();
+    this.largeText = accessibility.largeText;
+    this.highContrast = accessibility.highContrast;
   }
 
   private currentTitle(): string {
@@ -89,13 +95,20 @@ struct Index {
         }
       })
     } else if (this.selected === MainDestination.MALL) {
-      MallPage()
+      MallPage({
+        loggedIn: this.loggedIn,
+        onLoginTap: (): void => { this.showLogin = true; }
+      })
     } else if (this.selected === MainDestination.PROFILE) {
       ProfilePage({
         loggedIn: $loggedIn,
         displayName: $displayName,
         onLoginTap: (): void => {
           this.showLogin = true;
+        },
+        onAccessibilityChanged: (largeText: boolean, highContrast: boolean): void => {
+          this.largeText = largeText;
+          this.highContrast = highContrast;
         }
       })
     } else {
@@ -120,13 +133,14 @@ struct Index {
     Stack({ alignContent: Alignment.Center }) {
       Row() {
         if (this.isTablet && !this.showTicketing && !this.showBooking) {
-          SideNavigation({ selected: $selected })
+          SideNavigation({ selected: $selected, largeText: this.largeText })
         }
         Column() {
           AppHeader({
             title: this.currentTitle(),
             loggedIn: this.loggedIn,
             displayName: this.displayName,
+            largeText: this.largeText,
             onLoginTap: (): void => {
               this.showLogin = true;
             }
@@ -137,7 +151,7 @@ struct Index {
           .layoutWeight(1)
           .width('100%')
           if (!this.isTablet && !this.showTicketing && !this.showBooking) {
-            BottomNavigation({ selected: $selected })
+            BottomNavigation({ selected: $selected, largeText: this.largeText })
           }
         }
         .layoutWeight(1)
@@ -163,6 +177,7 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.page_background'))
+    .contrast(this.highContrast ? 1.25 : 1)
     .onAreaChange((_oldArea: Area, newArea: Area) => {
       this.isTablet = Number(newArea.width) >= 720;
     })

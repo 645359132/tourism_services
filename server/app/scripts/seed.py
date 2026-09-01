@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, time, timedelta
+from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -15,6 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.security import hash_password
+from app.db.models.commerce import (
+    Campaign,
+    PointAccount,
+    PointLedgerEntry,
+    Product,
+    ProductInventory,
+    Reward,
+    ShopCategory,
+)
+from app.db.models.engagement import FAQ, FacilityPOI
 from app.db.models.guide import (
     Attraction,
     CrowdSnapshot,
@@ -49,6 +60,7 @@ AUTH_DEMO_SEED_KEY = "auth-demo-v1"
 TICKETING_SEED_KEY = "ticketing-demo-v1"
 GUIDE_SEED_KEY = "guide-demo-v1"
 MARKETPLACE_SEED_KEY = "marketplace-demo-v1"
+CHECKPOINT7_SEED_KEY = "checkpoint7-demo-v1"
 DEMO_PASSWORD = "Tourism123!"
 ROLE_DESCRIPTIONS = {
     "tourist": "Visitor using tourism discovery and personalization features",
@@ -745,6 +757,284 @@ async def _seed_marketplace_data(session: AsyncSession) -> None:
             session.add(UserScheduleLock(user_id=user_id, version=1))
 
 
+async def _seed_checkpoint7_data(session: AsyncSession) -> None:
+    category_specs = (
+        ("culture", "文化文创", "景区文化主题纪念品", 10),
+        ("green", "绿色出行", "可重复使用与低碳旅行用品", 20),
+        ("food", "地方风味", "本地演示食品与茶礼", 30),
+    )
+    categories: dict[str, ShopCategory] = {}
+    for code, name, description, sort_order in category_specs:
+        category = await session.scalar(select(ShopCategory).where(ShopCategory.code == code))
+        if category is None:
+            category = ShopCategory(
+                code=code,
+                name=name,
+                description=description,
+                sort_order=sort_order,
+                is_active=True,
+            )
+            session.add(category)
+            await session.flush()
+        categories[code] = category
+
+    product_specs = (
+        (
+            "CULTURE-PASSPORT",
+            "culture",
+            "文化数字护照册",
+            "用于记录景区文化印章的实体纪念册",
+            3_900,
+            300,
+            ["文化", "护照", "纪念"],
+            60,
+        ),
+        (
+            "CRAFT-KIT",
+            "culture",
+            "非遗手作体验包",
+            "含本地演示材料的亲子手作包",
+            6_800,
+            None,
+            ["亲子", "非遗"],
+            30,
+        ),
+        (
+            "GREEN-BOTTLE",
+            "green",
+            "景区环保水杯",
+            "可重复使用的轻量随行杯",
+            5_000,
+            400,
+            ["绿色", "低碳"],
+            50,
+        ),
+        (
+            "TEA-GIFT",
+            "food",
+            "云水茶礼",
+            "本地茶文化演示礼盒",
+            8_800,
+            None,
+            ["茶文化", "伴手礼"],
+            25,
+        ),
+    )
+    products: dict[str, Product] = {}
+    for (
+        sku,
+        category_code,
+        name,
+        description,
+        price,
+        points_price,
+        tags,
+        stock,
+    ) in product_specs:
+        product = await session.scalar(select(Product).where(Product.sku == sku))
+        if product is None:
+            product = Product(
+                category_id=categories[category_code].id,
+                sku=sku,
+                name=name,
+                description=description,
+                price_cents=price,
+                points_price=points_price,
+                tags=tags,
+                image_url=None,
+                is_active=True,
+                is_demo=True,
+            )
+            product.inventory = ProductInventory(stock=stock, version=1)
+            session.add(product)
+            await session.flush()
+        products[sku] = product
+
+    campaign = await session.scalar(select(Campaign).where(Campaign.code == "green-month"))
+    now = datetime.now(UTC)
+    if campaign is None:
+        campaign = Campaign(
+            code="green-month",
+            name="绿色出行月",
+            description="环保用品本地演示限时折扣",
+            product_id=products["GREEN-BOTTLE"].id,
+            category_id=None,
+            discount_bps=2_000,
+            starts_at=now - timedelta(days=1),
+            ends_at=now + timedelta(days=30),
+            is_active=True,
+        )
+        session.add(campaign)
+    elif (
+        campaign.ends_at
+        if campaign.ends_at.tzinfo is not None
+        else campaign.ends_at.replace(tzinfo=UTC)
+    ) <= now + timedelta(days=7):
+        campaign.starts_at = now - timedelta(days=1)
+        campaign.ends_at = now + timedelta(days=30)
+
+    reward_specs = (
+        ("passport_stamp", "文化探索纪念章", "演示文化任务纪念章", 150, 30),
+        ("green_coupon", "绿色餐饮优惠券", "演示积分兑换优惠券", 200, 20),
+        ("rest_pass", "休息区饮品券", "演示休息点饮品兑换", 100, 40),
+    )
+    for code, name, description, points_cost, stock in reward_specs:
+        reward = await session.scalar(select(Reward).where(Reward.code == code))
+        if reward is None:
+            session.add(
+                Reward(
+                    code=code,
+                    name=name,
+                    description=description,
+                    points_cost=points_cost,
+                    stock=stock,
+                    is_active=True,
+                    is_demo=True,
+                )
+            )
+
+    faq_specs = (
+        ("ticket_refund", "票务", "如何申请退票?", "在订单详情按退改规则提交申请.", 10),
+        ("queue_fastpass", "项目", "快速通行券是否真实扣款?", "当前为明确标注的本地演示支付.", 20),
+        (
+            "offline_pack",
+            "离线",
+            "弱网时还能查看电子票吗?",
+            "同步过的离线旅行包可查看核心票据与行程.",
+            30,
+        ),
+        ("support_sos", "应急", "紧急情况如何求助?", "优先联系现场人员并使用 SOS 入口.", 40),
+    )
+    for code, category, question, answer, sort_order in faq_specs:
+        faq = await session.scalar(select(FAQ).where(FAQ.code == code))
+        if faq is None:
+            session.add(
+                FAQ(
+                    code=code,
+                    category=category,
+                    question=question,
+                    answer=answer,
+                    sort_order=sort_order,
+                    is_active=True,
+                )
+            )
+
+    nodes = {
+        node.code: node
+        for node in await session.scalars(
+            select(RouteNode).where(
+                RouteNode.code.in_(("entrance", "toilet_central", "medical", "rest_pavilion"))
+            )
+        )
+    }
+    facility_specs = (
+        (
+            "visitor_center",
+            "SERVICE",
+            "游客服务中心",
+            "咨询, 失物招领与无障碍协助",
+            "entrance",
+            True,
+            True,
+            True,
+            False,
+        ),
+        (
+            "toilet_central",
+            "TOILET",
+            "中心无障碍厕所",
+            "含无障碍厕位与母婴设施",
+            "toilet_central",
+            True,
+            True,
+            True,
+            True,
+        ),
+        (
+            "medical_station",
+            "MEDICAL",
+            "景区医务室",
+            "提供基础急救与现场转介",
+            "medical",
+            True,
+            True,
+            True,
+            False,
+        ),
+        (
+            "lake_rest",
+            "REST",
+            "湖畔休息亭",
+            "适老座椅与亲子休息点",
+            "rest_pavilion",
+            True,
+            True,
+            True,
+            False,
+        ),
+    )
+    for (
+        code,
+        kind,
+        name,
+        description,
+        node_code,
+        accessible,
+        wheelchair_ok,
+        stroller_ok,
+        baby_care,
+    ) in facility_specs:
+        facility = await session.scalar(select(FacilityPOI).where(FacilityPOI.code == code))
+        if facility is None:
+            session.add(
+                FacilityPOI(
+                    code=code,
+                    name=name,
+                    category=kind,
+                    description=description,
+                    node_id=nodes[node_code].id,
+                    accessible=accessible,
+                    wheelchair_ok=wheelchair_ok,
+                    stroller_accessible=stroller_ok,
+                    baby_care=baby_care,
+                    open_status="OPEN",
+                    source="curated_demo",
+                    is_demo=True,
+                )
+            )
+
+    for user_id in await session.scalars(select(User.id)):
+        source_id = uuid5(NAMESPACE_URL, f"smart-tourism-welcome:{user_id}")
+        existing_ledger = await session.scalar(
+            select(PointLedgerEntry).where(
+                PointLedgerEntry.user_id == user_id,
+                PointLedgerEntry.source_type == "WELCOME",
+                PointLedgerEntry.source_id == source_id,
+                PointLedgerEntry.entry_type == "EARN",
+            )
+        )
+        if existing_ledger is not None:
+            continue
+        account = await session.get(PointAccount, user_id)
+        if account is None:
+            account = PointAccount(user_id=user_id, balance=0, version=1)
+            session.add(account)
+            await session.flush()
+        account.balance += 500
+        account.version += 1
+        session.add(
+            PointLedgerEntry(
+                user_id=user_id,
+                entry_type="EARN",
+                delta=500,
+                balance_after=account.balance,
+                source_type="WELCOME",
+                source_id=source_id,
+                description="本地演示欢迎积分",
+            )
+        )
+
+
 async def seed_database(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     *,
@@ -936,6 +1226,20 @@ async def seed_database(
             )
             inserted = True
         await _seed_marketplace_data(session)
+
+        checkpoint7_seed = await session.get(SeedRecord, CHECKPOINT7_SEED_KEY)
+        if checkpoint7_seed is None:
+            session.add(
+                SeedRecord(
+                    key=CHECKPOINT7_SEED_KEY,
+                    description=(
+                        "Shop, campaigns, points, rewards, FAQs, facilities, "
+                        "support, and collaboration demos"
+                    ),
+                )
+            )
+            inserted = True
+        await _seed_checkpoint7_data(session)
 
         await session.commit()
         return inserted

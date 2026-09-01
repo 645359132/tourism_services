@@ -15,6 +15,8 @@ import {
   ItineraryItem
 } from '../main/ets/models/GuideModels';
 import { TicketOrderStatus, TicketSlot } from '../main/ets/models/TicketModels';
+import { CartItem, PointsReward, ShopOrderStatus, ShopProduct } from '../main/ets/models/ShopModels';
+import { FeedbackKind, FacilityItem } from '../main/ets/models/ServiceModels';
 import { ApiErrorCode, ApiErrorInfo, mapApiError } from '../main/ets/network/ApiError';
 import { ValidationResult, validateCredentials, validatePassword, validatePhone } from '../main/ets/utils/InputValidators';
 import { findTripConflict, hasTripConflict } from '../main/ets/utils/TripConflict';
@@ -50,6 +52,25 @@ import {
   validateTicketQuantity,
   validateVisitDate
 } from '../main/ets/utils/TicketRules';
+import {
+  canPayShopOrder,
+  effectiveProductPrice,
+  validateCartQuantity,
+  validateCheckout,
+  validateRewardRedemption,
+  validateShare
+} from '../main/ets/utils/ShopRules';
+import {
+  facilityMatchesPreference,
+  parseSupportEvent,
+  shouldAcceptSupportSequence,
+  validateFeedback,
+  validateFollowUp,
+  validateInviteCode,
+  validateMeetingPoint,
+  validateMemberStatus,
+  validateSupportMessage
+} from '../main/ets/utils/ServiceRules';
 
 export default function tourismBusinessRulesTest() {
   describe('tourismBusinessRules', () => {
@@ -316,6 +337,91 @@ export default function tourismBusinessRulesTest() {
       expect(pending.getOrCreate('ride-1:2:trip-1', 'queue-join')).assertEqual(firstKey);
       pending.resolveFailure(409, false);
       expect(pending.getKey()).assertEqual('');
+    });
+
+    it('appliesCampaignPriceAndCartInventoryRules', 0, () => {
+      const product: ShopProduct = new ShopProduct();
+      product.price_cents = 10000;
+      product.effective_price_cents = 8000;
+      product.stock = 3;
+      expect(effectiveProductPrice(product)).assertEqual(8000);
+      expect(validateCartQuantity(3, product.stock).valid).assertTrue();
+      expect(validateCartQuantity(4, product.stock).valid).assertFalse();
+      product.effective_price_cents = 12000;
+      expect(effectiveProductPrice(product)).assertEqual(10000);
+    });
+
+    it('validatesServerAuthoritativeCheckoutAndTerminalOrders', 0, () => {
+      const item: CartItem = new CartItem();
+      item.quantity = 2;
+      item.stock = 5;
+      expect(validateCheckout([item], '游客', '13800138000', '浙江省', '杭州市', '游客中心自提点').valid)
+        .assertTrue();
+      expect(validateCheckout([], '游客', '13800138000', '浙江省', '杭州市', '游客中心自提点').valid)
+        .assertFalse();
+      expect(canPayShopOrder(ShopOrderStatus.PENDING_PAYMENT)).assertTrue();
+      expect(canPayShopOrder(ShopOrderStatus.EXPIRED)).assertFalse();
+      expect(canPayShopOrder(ShopOrderStatus.PAID)).assertFalse();
+    });
+
+    it('validatesPointsRedeemAndDemoShare', 0, () => {
+      const reward: PointsReward = new PointsReward();
+      reward.points_cost = 300;
+      reward.stock = 2;
+      expect(validateRewardRedemption(500, reward).valid).assertTrue();
+      expect(validateRewardRedemption(200, reward).valid).assertFalse();
+      expect(validateShare('PRODUCT', 'product-1', '分享景区好物').valid).assertTrue();
+      expect(validateShare('PRODUCT', '', '分享景区好物').valid).assertFalse();
+    });
+
+    it('validatesFeedbackSupportAndGroupInputs', 0, () => {
+      expect(validateFeedback(FeedbackKind.COMPLAINT, '排队体验', '等待时间过长').valid).assertTrue();
+      expect(validateFollowUp(5, '处理及时').valid).assertTrue();
+      expect(validateSupportMessage('请问集合点在哪里').valid).assertTrue();
+      expect(validateInviteCode('ABC123').valid).assertTrue();
+      expect(validateInviteCode('bad').valid).assertFalse();
+      expect(validateMeetingPoint('游客中心', '').valid).assertTrue();
+      expect(validateMemberStatus('LOST', '正在原地等待').valid).assertTrue();
+      expect(validateMemberStatus('UNKNOWN', '').valid).assertFalse();
+    });
+
+    it('ordersAndParsesSupportWebSocketMessages', 0, () => {
+      const payload: string = '{"id":"support-event-1","type":"support.message",' +
+        '"occurred_at":"2026-09-01T12:00:00Z","data":{"conversation":{"id":"conversation-1",' +
+        '"subject":"咨询","status":"OPEN","provider":"demo_support_bot","is_demo":true,' +
+        '"last_message_at":"2026-09-01T12:00:00Z","created_at":"2026-09-01T11:00:00Z"},' +
+        '"message":{"id":"message-1","conversation_id":"conversation-1","sender_type":"BOT",' +
+        '"sender_name":"DemoSupportBot","content":"您好","sequence":3,' +
+        '"provider":"demo_support_bot","is_demo":true,"created_at":"2026-09-01T12:00:00Z"},' +
+        '"source":"demo_support_bot","is_demo":true}}';
+      expect(parseSupportEvent(payload).valid).assertTrue();
+      const humanPayload: string = payload.replace('"source":"demo_support_bot","is_demo":true',
+        '"source":"human","is_demo":false');
+      expect(parseSupportEvent(humanPayload).valid).assertTrue();
+      expect(parseSupportEvent('{broken').valid).assertFalse();
+      expect(shouldAcceptSupportSequence(2, 3)).assertTrue();
+      expect(shouldAcceptSupportSequence(3, 3)).assertFalse();
+      expect(shouldAcceptSupportSequence(3, 2)).assertFalse();
+    });
+
+    it('filtersFacilitiesByPersistedRoutePreferences', 0, () => {
+      const facility: FacilityItem = new FacilityItem();
+      facility.wheelchair_ok = true;
+      facility.stroller_ok = false;
+      expect(facilityMatchesPreference(facility, true, false)).assertTrue();
+      expect(facilityMatchesPreference(facility, false, true)).assertFalse();
+    });
+
+    it('reusesCheckpointSevenIdempotencyKeysOnTransportFailure', 0, () => {
+      const prefixes: string[] = ['shop-checkout', 'points-redeem', 'content-share', 'support-message'];
+      for (let index: number = 0; index < prefixes.length; index++) {
+        const pending: PendingIdempotentOperation = new PendingIdempotentOperation();
+        const first: string = pending.getOrCreate(`operation-${index}`, prefixes[index]);
+        pending.resolveFailure(503, true);
+        expect(pending.getOrCreate(`operation-${index}`, prefixes[index])).assertEqual(first);
+        pending.resolveSuccess();
+        expect(pending.getKey()).assertEqual('');
+      }
     });
   });
 }

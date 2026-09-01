@@ -24,6 +24,10 @@ export class AuthStore {
     return this.session === null ? '游客' : this.session.displayName;
   }
 
+  getUserId(): string {
+    return this.session === null ? '' : this.session.userId;
+  }
+
   getAccessToken(): string {
     return this.session === null ? '' : this.session.accessToken;
   }
