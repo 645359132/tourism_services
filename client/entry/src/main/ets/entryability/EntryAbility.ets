@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { AccessibilityStore } from '../stores/AccessibilityStore';
+import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
 
 const DOMAIN = 0x0000;
 
@@ -9,6 +10,7 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
     AccessibilityStore.getInstance().initialize(this.context);
+    TravelPersistenceStore.getInstance().initialize(this.context);
   }
 
   onDestroy(): void {

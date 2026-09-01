@@ -11,6 +11,8 @@ import { TripPage } from './TripPage';
 import { TicketPage } from './TicketPage';
 import { BookingPage } from './BookingPage';
 import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
+import { globalContentExtent, globalContentScale } from '../utils/AccessibilityRules';
+import { isWideWindow } from '../utils/ResponsiveRules';
 
 @Entry
 @Component
@@ -157,8 +159,9 @@ struct Index {
         .layoutWeight(1)
         .height('100%')
       }
-      .width('100%')
-      .height('100%')
+      .width(globalContentExtent(this.largeText))
+      .height(globalContentExtent(this.largeText))
+      .scale({ x: globalContentScale(this.largeText), y: globalContentScale(this.largeText) })
 
       if (this.showLogin) {
         Column() {
@@ -179,7 +182,7 @@ struct Index {
     .backgroundColor($r('app.color.page_background'))
     .contrast(this.highContrast ? 1.25 : 1)
     .onAreaChange((_oldArea: Area, newArea: Area) => {
-      this.isTablet = Number(newArea.width) >= 720;
+      this.isTablet = isWideWindow(Number(newArea.width));
     })
   }
 }

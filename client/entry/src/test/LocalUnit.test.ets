@@ -14,12 +14,39 @@ import {
   ItineraryGenerateRequest,
   ItineraryItem
 } from '../main/ets/models/GuideModels';
-import { TicketOrderStatus, TicketSlot } from '../main/ets/models/TicketModels';
-import { CartItem, PointsReward, ShopOrderStatus, ShopProduct } from '../main/ets/models/ShopModels';
+import { TicketOrderStatus, TicketQrResponse, TicketSlot } from '../main/ets/models/TicketModels';
+import { CartItem, PointsReward, ShopOrder, ShopOrderItem, ShopOrderStatus, ShopProduct } from '../main/ets/models/ShopModels';
 import { FeedbackKind, FacilityItem } from '../main/ets/models/ServiceModels';
-import { ApiErrorCode, ApiErrorInfo, mapApiError } from '../main/ets/network/ApiError';
+import {
+  CachedOfflineAsset,
+  AppliedSyncRecord,
+  CachedGuidance,
+  JourneyJsonPayload,
+  OfflineAssetContent,
+  OfflineAssetManifest,
+  OfflineMutation,
+  OfflineMutationStatus,
+  OfflineOutbox,
+  OfflineOutboxItem,
+  OfflinePackCache,
+  OfflineTravelState,
+  SyncPushResult
+} from '../main/ets/models/JourneyModels';
+import {
+  CachedShopOrder,
+  CachedTicketIdentity,
+  createOwnedCacheEnvelope,
+  deterministicPayloadFingerprint,
+  isSafeTravelCachePayload,
+  readOwnedCacheEnvelope
+} from '../main/ets/models/PersistenceModels';
+import { ApiErrorCode, ApiErrorInfo, extractServerErrorCode, mapApiError } from '../main/ets/network/ApiError';
+import { NetworkResult } from '../main/ets/network/HttpClient';
+import { JourneyRoutePolicy } from '../main/ets/network/services/JourneyService';
 import { ValidationResult, validateCredentials, validatePassword, validatePhone } from '../main/ets/utils/InputValidators';
 import { findTripConflict, hasTripConflict } from '../main/ets/utils/TripConflict';
+import { globalContentExtent, globalContentScale } from '../main/ets/utils/AccessibilityRules';
+import { WindowSizeClass, classifyWindowWidth, isWideWindow } from '../main/ets/utils/ResponsiveRules';
 import {
   detectSessionInventoryChange,
   hasReservationConflict,
@@ -71,6 +98,22 @@ import {
   validateMemberStatus,
   validateSupportMessage
 } from '../main/ets/utils/ServiceRules';
+import {
+  SyncFailureDisposition,
+  assetMatchesManifest,
+  classifySyncFailure,
+  extractCachedGuidance,
+  isOfflineCacheValid,
+  isSafeOfflineMutation,
+  manifestFingerprint,
+  markOutboxFailure,
+  mergeAppliedSyncRecords,
+  offlineStateLabel,
+  removeAppliedOutboxItems,
+  shouldUseCachedManifest,
+  validateGreenEvidence,
+  validateSos
+} from '../main/ets/utils/JourneyRules';
 
 export default function tourismBusinessRulesTest() {
   describe('tourismBusinessRules', () => {
@@ -422,6 +465,160 @@ export default function tourismBusinessRulesTest() {
         pending.resolveSuccess();
         expect(pending.getKey()).assertEqual('');
       }
+    });
+
+    it('appliesConstrainedGlobalLargeTextScale', 0, () => {
+      expect(globalContentScale(false)).assertEqual(1);
+      expect(globalContentExtent(false)).assertEqual('100%');
+      expect(globalContentScale(true)).assertEqual(1.04);
+      expect(globalContentExtent(true)).assertEqual('96%');
+      expect(classifyWindowWidth(719)).assertEqual(WindowSizeClass.COMPACT);
+      expect(classifyWindowWidth(720)).assertEqual(WindowSizeClass.WIDE);
+      expect(isWideWindow(1080)).assertTrue();
+    });
+
+    it('handlesConditionalManifestCacheHitsAndFallback', 0, () => {
+      const notModified: NetworkResult<string> = new NetworkResult<string>(true, null, null, 304, '"pack-v1"', true);
+      expect(notModified.statusCode).assertEqual(304);
+      expect(notModified.notModified).assertTrue();
+      expect(notModified.etag).assertEqual('"pack-v1"');
+      expect(shouldUseCachedManifest(true, true)).assertTrue();
+      expect(shouldUseCachedManifest(true, false)).assertFalse();
+      expect(JourneyRoutePolicy.requiresAuth('/offline/packs/latest')).assertTrue();
+      expect(JourneyRoutePolicy.requiresAuth('/emergency/resources')).assertTrue();
+    });
+
+    it('validatesUserSchemaAndChecksumScopedOfflineCache', 0, () => {
+      const expected: OfflineAssetManifest = new OfflineAssetManifest();
+      expected.id = 'asset-1';
+      expected.asset_key = 'core-map';
+      expected.content_hash = 'a'.repeat(64);
+      expected.size_bytes = 24;
+      const actual: OfflineAssetContent = new OfflineAssetContent();
+      actual.id = expected.id;
+      actual.asset_key = expected.asset_key;
+      actual.content_hash = expected.content_hash;
+      actual.size_bytes = expected.size_bytes;
+      actual.encoding = 'json';
+      expect(assetMatchesManifest(expected, actual)).assertTrue();
+      const cache: OfflinePackCache = new OfflinePackCache();
+      cache.owner_user_id = 'user-1';
+      cache.pack.id = 'pack-1';
+      cache.pack.version = 1;
+      cache.pack.asset_count = 1;
+      cache.manifest.pack_id = 'pack-1';
+      cache.manifest.version = 1;
+      cache.manifest.etag = '"pack-v1"';
+      cache.manifest.assets = [expected];
+      const cachedAsset: CachedOfflineAsset = new CachedOfflineAsset();
+      cachedAsset.id = expected.id;
+      cachedAsset.asset_key = expected.asset_key;
+      cachedAsset.content_hash = expected.content_hash;
+      cachedAsset.size_bytes = expected.size_bytes;
+      cachedAsset.payload_json = '{"map":true}';
+      cachedAsset.payload_fingerprint = deterministicPayloadFingerprint(cachedAsset.payload_json);
+      cache.assets = [cachedAsset];
+      cache.manifest_checksum = manifestFingerprint('pack-1', 1, '"pack-v1"', [expected]);
+      expect(isOfflineCacheValid(cache, 'user-1')).assertTrue();
+      expect(isOfflineCacheValid(cache, 'user-2')).assertFalse();
+      cachedAsset.payload_json = '{"map":false}';
+      expect(isOfflineCacheValid(cache, 'user-1')).assertFalse();
+      cachedAsset.payload_json = '{"map":true}';
+      cache.manifest_checksum = 'corrupt';
+      expect(isOfflineCacheValid(cache, 'user-1')).assertFalse();
+    });
+
+    it('keepsOutboxReplayDurableAndClassifiesFailures', 0, () => {
+      const outbox: OfflineOutbox = new OfflineOutbox();
+      const item: OfflineOutboxItem = new OfflineOutboxItem();
+      item.mutation.client_mutation_id = 'mutation-123';
+      item.mutation.client_version = 1;
+      item.mutation.entity_type = 'NOTE';
+      item.mutation.entity_id = 'note-1';
+      item.mutation.operation = 'UPSERT';
+      item.mutation.payload = new JourneyJsonPayload();
+      outbox.items = [item];
+      expect(isSafeOfflineMutation(item.mutation)).assertTrue();
+      expect(classifySyncFailure(0)).assertEqual(SyncFailureDisposition.RETRYABLE);
+      expect(classifySyncFailure(503)).assertEqual(SyncFailureDisposition.RETRYABLE);
+      expect(classifySyncFailure(401)).assertEqual(SyncFailureDisposition.AUTH_REQUIRED);
+      expect(classifySyncFailure(409)).assertEqual(SyncFailureDisposition.TERMINAL);
+      markOutboxFailure(outbox, 503, 'retry');
+      expect(outbox.items[0].status).assertEqual(OfflineMutationStatus.RETRYABLE);
+      const result: SyncPushResult = new SyncPushResult();
+      result.client_mutation_id = 'mutation-123';
+      result.status = 'REPLAYED';
+      removeAppliedOutboxItems(outbox, [result]);
+      expect(outbox.items.length).assertEqual(0);
+      expect(offlineStateLabel(OfflineTravelState.PENDING_SYNC)).assertEqual('有待同步操作');
+      const cursorError: string = '{"error":{"code":"SYNC_CURSOR_INVALID","message":"bad"}}';
+      expect(extractServerErrorCode(cursorError)).assertEqual('SYNC_CURSOR_INVALID');
+    });
+
+    it('deduplicatesPulledPagesAtDurableCursorBoundary', 0, () => {
+      const record: AppliedSyncRecord = new AppliedSyncRecord();
+      record.client_mutation_id = 'mutation-1';
+      record.server_cursor = 'opaque-cursor-1';
+      const once: AppliedSyncRecord[] = mergeAppliedSyncRecords([], [record]);
+      const replayed: AppliedSyncRecord[] = mergeAppliedSyncRecords(once, [record]);
+      expect(once.length).assertEqual(1);
+      expect(replayed.length).assertEqual(1);
+    });
+
+    it('restoresCachedEmergencyMapAndGuideDetails', 0, () => {
+      const emergency: CachedOfflineAsset = new CachedOfflineAsset();
+      emergency.kind = 'EMERGENCY';
+      emergency.payload_json = '{"steps":["保持冷静","联系工作人员"]}';
+      const guide: CachedOfflineAsset = new CachedOfflineAsset();
+      guide.kind = 'GUIDE';
+      guide.payload_json = '{"sections":["恢复联网后同步"]}';
+      const map: CachedOfflineAsset = new CachedOfflineAsset();
+      map.kind = 'MAP';
+      map.payload_json = '{"version":1,"nodes":[{"code":"medical","name":"医务室"}]}';
+      const narration: CachedOfflineAsset = new CachedOfflineAsset();
+      narration.kind = 'NARRATION';
+      narration.payload_json = '{"transcripts":["文化讲解离线文本"]}';
+      const guidance: CachedGuidance = extractCachedGuidance([emergency, guide, map, narration]);
+      expect(guidance.emergency_steps.length).assertEqual(2);
+      expect(guidance.guide_sections[0]).assertEqual('恢复联网后同步');
+      expect(guidance.map_nodes[0]).assertEqual('medical · 医务室');
+      expect(guidance.narration_transcripts[0]).assertEqual('文化讲解离线文本');
+    });
+
+    it('excludesBearerSecretsAndDeliveryPiiFromTravelCache', 0, () => {
+      const qr = new TicketQrResponse();
+      qr.ticket_id = 'ticket-1';
+      qr.ticket_code = 'T001';
+      qr.qr_data = 'signed-bearer-secret';
+      const ticketPayload: string = JSON.stringify(CachedTicketIdentity.fromQr(qr));
+      expect(ticketPayload.includes('qr_data')).assertFalse();
+      const order: ShopOrder = new ShopOrder();
+      order.id = 'order-1';
+      order.order_no = 'S001';
+      order.delivery_phone = '13800138000';
+      order.delivery_address = '敏感配送地址';
+      const orderItem: ShopOrderItem = new ShopOrderItem();
+      orderItem.product_name = '纪念品';
+      orderItem.quantity = 1;
+      order.items = [orderItem];
+      const orderPayload: string = JSON.stringify(CachedShopOrder.fromOrder(order));
+      expect(orderPayload.includes('delivery_phone')).assertFalse();
+      expect(orderPayload.includes('delivery_address')).assertFalse();
+      expect(isSafeTravelCachePayload(ticketPayload + orderPayload)).assertTrue();
+      expect(isSafeTravelCachePayload('{"access_token":"secret"}')).assertFalse();
+      expect(isSafeTravelCachePayload('{"password":"secret"}')).assertFalse();
+      const envelope: string = createOwnedCacheEnvelope('user-1', ticketPayload + orderPayload);
+      expect(readOwnedCacheEnvelope(envelope, 'user-1')).assertEqual(ticketPayload + orderPayload);
+      expect(readOwnedCacheEnvelope(envelope, 'user-2')).assertEqual('');
+      expect(readOwnedCacheEnvelope(envelope.substring(0, 12), 'user-1')).assertEqual('');
+    });
+
+    it('validatesSosAndGreenEvidenceWithoutClaimingDispatch', 0, () => {
+      expect(validateSos('MEDICAL', '需要协助', null, null).valid).assertTrue();
+      expect(validateSos('MEDICAL', '需要协助', 30.2, null).valid).assertFalse();
+      expect(validateSos('UNKNOWN', '需要协助', null, null).valid).assertFalse();
+      expect(validateGreenEvidence('已完成绿色出行演示').valid).assertTrue();
+      expect(validateGreenEvidence('').valid).assertFalse();
     });
   });
 }

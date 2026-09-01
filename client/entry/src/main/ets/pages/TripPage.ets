@@ -13,6 +13,8 @@ import { NetworkResult } from '../network/HttpClient';
 import { ItineraryService } from '../network/services/ItineraryService';
 import { AppStore } from '../stores/AppStore';
 import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
+import { AuthStore } from '../stores/AuthStore';
+import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
 import {
   GuideRuleResult,
   ReplanAssessment,
@@ -45,10 +47,20 @@ export struct TripPage {
   aboutToAppear(): void {
     const settings: AccessibilitySettings = AccessibilityStore.getInstance().getSettings();
     this.accessible = settings.wheelchair || settings.stroller;
+    if (this.loggedIn && this.itinerary === null) {
+      const cached: Itinerary | null = TravelPersistenceStore.getInstance().loadItinerary(
+        AuthStore.getInstance().getUserId());
+      if (cached !== null) {
+        this.itinerary = cached;
+        this.syncCurrentItinerary(cached);
+        this.operationMessage = '已恢复本地缓存行程，联网后可刷新版本';
+      }
+    }
   }
 
   private syncCurrentItinerary(value: Itinerary): void {
     AppStore.getInstance().setCurrentItinerary(value.id, value.revision);
+    TravelPersistenceStore.getInstance().saveItinerary(AuthStore.getInstance().getUserId(), value);
   }
 
   private stateForError(error: ApiErrorInfo | null): ContentState {

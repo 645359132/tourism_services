@@ -7,7 +7,9 @@ Run after ``alembic upgrade head`` with ``uv run tourism-seed`` or
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, time, timedelta
+from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
@@ -32,6 +34,14 @@ from app.db.models.guide import (
     Narration,
     RouteEdge,
     RouteNode,
+)
+from app.db.models.journey import (
+    EmergencyBulletin,
+    EmergencyResource,
+    GreenTask,
+    OfflineAsset,
+    OfflinePack,
+    PassportStampDefinition,
 )
 from app.db.models.marketplace import (
     BundleComponent,
@@ -61,6 +71,7 @@ TICKETING_SEED_KEY = "ticketing-demo-v1"
 GUIDE_SEED_KEY = "guide-demo-v1"
 MARKETPLACE_SEED_KEY = "marketplace-demo-v1"
 CHECKPOINT7_SEED_KEY = "checkpoint7-demo-v1"
+CHECKPOINT8_SEED_KEY = "checkpoint8-demo-v1"
 DEMO_PASSWORD = "Tourism123!"
 ROLE_DESCRIPTIONS = {
     "tourist": "Visitor using tourism discovery and personalization features",
@@ -1035,6 +1046,392 @@ async def _seed_checkpoint7_data(session: AsyncSession) -> None:
         )
 
 
+async def _seed_checkpoint8_data(session: AsyncSession) -> None:
+    asset_specs = (
+        (
+            "core-map",
+            "MAP",
+            "景区核心离线地图",
+            {
+                "version": 1,
+                "nodes": [
+                    {"code": "entrance", "name": "游客中心入口"},
+                    {"code": "medical", "name": "医务室"},
+                    {"code": "toilet_central", "name": "中心厕所"},
+                    {"code": "rest_pavilion", "name": "湖畔休息亭"},
+                ],
+            },
+            True,
+        ),
+        (
+            "travel-guide",
+            "GUIDE",
+            "离线旅行核心说明",
+            {
+                "sections": [
+                    "电子票和行程需在联网时完成同步",
+                    "离线包不替代现场安全指引",
+                    "恢复联网后使用游标同步变更",
+                ]
+            },
+            True,
+        ),
+        (
+            "emergency-guide",
+            "EMERGENCY",
+            "离线应急指引",
+            {
+                "steps": [
+                    "保持冷静并观察现场疏散标识",
+                    "优先联系现场工作人员",
+                    "演示 SOS 不会联系真实急救机构",
+                ]
+            },
+            True,
+        ),
+        (
+            "culture-intro",
+            "CULTURE",
+            "文化护照离线简介",
+            {"stamps": ["古城门", "文化博物馆", "非遗工坊"]},
+            False,
+        ),
+        (
+            "narration-core",
+            "NARRATION",
+            "核心文化离线讲解",
+            {
+                "language": "zh-CN",
+                "provider_mode": "text_demo",
+                "chapters": [
+                    {
+                        "code": "heritage_gate_intro",
+                        "title": "古城门文化导览",
+                        "duration_seconds": 45,
+                        "transcript": (
+                            "古城门位于景区历史轴线入口, 建筑形制展示了本地传统营造与城镇记忆."
+                        ),
+                    },
+                    {
+                        "code": "museum_intro",
+                        "title": "文化博物馆导览",
+                        "duration_seconds": 55,
+                        "transcript": (
+                            "文化博物馆通过地方史与非遗陈列, 串联景区的自然环境和社区生活."
+                        ),
+                    },
+                ],
+            },
+            True,
+        ),
+    )
+    manifest_items: list[dict[str, object]] = []
+    prepared_assets: list[tuple[str, str, str, dict[str, object], bool, str, int]] = []
+    for asset_key, kind, title, payload, required in asset_specs:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        content_hash = sha256(encoded).hexdigest()
+        size_bytes = len(encoded)
+        prepared_assets.append(
+            (
+                asset_key,
+                kind,
+                title,
+                payload,
+                required,
+                content_hash,
+                size_bytes,
+            )
+        )
+        manifest_items.append(
+            {
+                "asset_key": asset_key,
+                "content_hash": content_hash,
+                "kind": kind,
+                "required": required,
+                "size_bytes": size_bytes,
+                "title": title,
+            }
+        )
+    manifest_items.sort(key=lambda item: str(item["asset_key"]))
+    manifest_encoded = json.dumps(
+        manifest_items,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    manifest_hash = sha256(manifest_encoded).hexdigest()
+    pack_etag = sha256(f"offline-pack-v1:{manifest_hash}".encode()).hexdigest()
+    pack_id = uuid5(NAMESPACE_URL, "smart-tourism-offline-pack-v1")
+    pack = await session.get(OfflinePack, pack_id)
+    if pack is None:
+        pack = OfflinePack(
+            id=pack_id,
+            version=1,
+            name="智慧景区离线旅行包",
+            description="核心地图, 应急说明, 同步规则与文化简介",
+            etag=pack_etag,
+            manifest_hash=manifest_hash,
+            published_at=datetime.now(UTC),
+            expires_at=None,
+            is_active=True,
+            is_demo=True,
+        )
+        session.add(pack)
+        await session.flush()
+    for (
+        asset_key,
+        kind,
+        title,
+        payload,
+        required,
+        content_hash,
+        size_bytes,
+    ) in prepared_assets:
+        asset = await session.scalar(
+            select(OfflineAsset).where(
+                OfflineAsset.pack_id == pack.id,
+                OfflineAsset.asset_key == asset_key,
+            )
+        )
+        if asset is None:
+            session.add(
+                OfflineAsset(
+                    id=uuid5(
+                        NAMESPACE_URL,
+                        f"smart-tourism-offline-pack-v1:{asset_key}",
+                    ),
+                    pack_id=pack.id,
+                    asset_key=asset_key,
+                    kind=kind,
+                    title=title,
+                    content_hash=content_hash,
+                    size_bytes=size_bytes,
+                    required=required,
+                    payload=payload,
+                )
+            )
+        else:
+            asset.kind = kind
+            asset.title = title
+            asset.payload = payload
+            asset.required = required
+            asset.content_hash = content_hash
+            asset.size_bytes = size_bytes
+    await session.flush()
+    canonical_asset_keys = {item[0] for item in prepared_assets}
+    persisted_assets = list(
+        await session.scalars(select(OfflineAsset).where(OfflineAsset.pack_id == pack.id))
+    )
+    for persisted_asset in persisted_assets:
+        if persisted_asset.asset_key not in canonical_asset_keys:
+            await session.delete(persisted_asset)
+    pack.name = "智慧景区离线旅行包"
+    pack.description = "核心地图, 应急说明, 同步规则与文化简介"
+    pack.etag = pack_etag
+    pack.manifest_hash = manifest_hash
+    pack.is_active = True
+    pack.is_demo = True
+
+    nodes = {
+        node.code: node
+        for node in await session.scalars(
+            select(RouteNode).where(
+                RouteNode.code.in_(
+                    (
+                        "entrance",
+                        "medical",
+                        "toilet_central",
+                        "rest_pavilion",
+                        "node_heritage_gate",
+                        "node_museum",
+                        "node_craft",
+                    )
+                )
+            )
+        )
+    }
+    resource_specs = (
+        (
+            "medical",
+            "MEDICAL",
+            "景区医务室",
+            "基础急救与现场转介",
+            "120",
+            "medical",
+            ["优先联系现场工作人员", "危急情况拨打当地急救电话"],
+            10,
+        ),
+        (
+            "evacuation",
+            "EVACUATION",
+            "游客中心疏散集合点",
+            "按现场广播和标识前往集合",
+            None,
+            "entrance",
+            ["不要逆行", "照顾儿童和行动不便游客"],
+            20,
+        ),
+        (
+            "lost_help",
+            "LOST_HELP",
+            "走散协助点",
+            "在游客中心登记并等待工作人员协助",
+            None,
+            "entrance",
+            ["不要独自进入封闭区域", "保持通讯设备可用"],
+            30,
+        ),
+    )
+    for (
+        code,
+        kind,
+        title,
+        description,
+        phone,
+        node_code,
+        instructions,
+        priority,
+    ) in resource_specs:
+        resource = await session.scalar(
+            select(EmergencyResource).where(EmergencyResource.code == code)
+        )
+        if resource is None:
+            session.add(
+                EmergencyResource(
+                    code=code,
+                    kind=kind,
+                    title=title,
+                    description=description,
+                    phone=phone,
+                    node_id=nodes[node_code].id,
+                    instructions=instructions,
+                    priority=priority,
+                    is_active=True,
+                    is_demo=True,
+                )
+            )
+
+    now = datetime.now(UTC)
+    bulletin = await session.scalar(
+        select(EmergencyBulletin).where(EmergencyBulletin.code == "demo-safety")
+    )
+    if bulletin is None:
+        session.add(
+            EmergencyBulletin(
+                code="demo-safety",
+                title="演示安全提示",
+                content="请遵循现场标识. 本提示为本地种子数据.",
+                severity="INFO",
+                starts_at=now - timedelta(days=1),
+                ends_at=now + timedelta(days=30),
+                is_active=True,
+                is_demo=True,
+            )
+        )
+    elif (
+        bulletin.ends_at
+        if bulletin.ends_at.tzinfo is not None
+        else bulletin.ends_at.replace(tzinfo=UTC)
+    ) <= now + timedelta(days=7):
+        bulletin.starts_at = now - timedelta(days=1)
+        bulletin.ends_at = now + timedelta(days=30)
+
+    stamp_specs = (
+        (
+            "heritage_gate",
+            "古城门印章",
+            "探索景区历史轴线入口",
+            "node_heritage_gate",
+            30,
+        ),
+        (
+            "museum",
+            "文化博物馆印章",
+            "完成地方文化主题探索",
+            "node_museum",
+            40,
+        ),
+        (
+            "craft",
+            "非遗工坊印章",
+            "体验传统手工艺文化",
+            "node_craft",
+            35,
+        ),
+    )
+    for code, title, description, node_code, points in stamp_specs:
+        definition = await session.scalar(
+            select(PassportStampDefinition).where(PassportStampDefinition.code == code)
+        )
+        if definition is None:
+            session.add(
+                PassportStampDefinition(
+                    code=code,
+                    title=title,
+                    description=description,
+                    node_id=nodes[node_code].id,
+                    points_award=points,
+                    is_active=True,
+                    is_demo=True,
+                )
+            )
+
+    task_specs = (
+        (
+            "public_transport",
+            "TRANSPORT",
+            "绿色到达",
+            "使用公共交通或景区接驳到达",
+            25,
+            "填写演示出行方式",
+        ),
+        (
+            "water_refill",
+            "REFILL",
+            "环保补水",
+            "使用可重复水杯完成补水",
+            20,
+            "填写演示补水点",
+        ),
+        (
+            "culture_walk",
+            "CULTURE",
+            "文化步行探索",
+            "步行完成一段文化路线",
+            30,
+            "填写演示路线名称",
+        ),
+        (
+            "recycle",
+            "RECYCLE",
+            "垃圾分类",
+            "在景区分类投放点完成分类",
+            15,
+            "填写演示投放点",
+        ),
+    )
+    for code, kind, title, description, points, evidence_hint in task_specs:
+        task = await session.scalar(select(GreenTask).where(GreenTask.code == code))
+        if task is None:
+            session.add(
+                GreenTask(
+                    code=code,
+                    kind=kind,
+                    title=title,
+                    description=description,
+                    points_award=points,
+                    evidence_hint=evidence_hint,
+                    is_active=True,
+                    is_demo=True,
+                )
+            )
+
+
 async def seed_database(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     *,
@@ -1240,6 +1637,19 @@ async def seed_database(
             )
             inserted = True
         await _seed_checkpoint7_data(session)
+
+        checkpoint8_seed = await session.get(SeedRecord, CHECKPOINT8_SEED_KEY)
+        if checkpoint8_seed is None:
+            session.add(
+                SeedRecord(
+                    key=CHECKPOINT8_SEED_KEY,
+                    description=(
+                        "Offline pack, sync, emergency, SOS, passport, and green task demos"
+                    ),
+                )
+            )
+            inserted = True
+        await _seed_checkpoint8_data(session)
 
         await session.commit()
         return inserted

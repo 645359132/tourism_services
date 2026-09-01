@@ -13,9 +13,12 @@ import {
   TicketType,
   TicketTypeListResponse
 } from '../models/TicketModels';
-import { ApiErrorInfo } from '../network/ApiError';
+import { ApiErrorCode, ApiErrorInfo } from '../network/ApiError';
 import { NetworkResult } from '../network/HttpClient';
 import { TicketService } from '../network/services/TicketService';
+import { AuthStore } from '../stores/AuthStore';
+import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
+import { CachedTicketIdentity } from '../models/PersistenceModels';
 import {
   InventoryChangeResult,
   PendingIdempotentOperation,
@@ -66,6 +69,17 @@ export struct TicketPage {
   private reschedulePending: PendingIdempotentOperation = new PendingIdempotentOperation();
 
   aboutToAppear(): void {
+    if (this.loggedIn) {
+      const userId: string = AuthStore.getInstance().getUserId();
+      this.orders = TravelPersistenceStore.getInstance().loadTicketOrders(userId);
+      const cachedTicket: CachedTicketIdentity | null =
+        TravelPersistenceStore.getInstance().loadTicketIdentity(userId);
+      if (cachedTicket !== null) {
+        this.qrTicketCode = cachedTicket.ticket_code;
+        this.qrExpiresAt = cachedTicket.expires_at;
+        this.operationMessage = '已恢复离线票据身份；出于安全考虑，扫码凭证需联网重新获取';
+      }
+    }
     this.loadTypes();
   }
 
@@ -208,11 +222,20 @@ export struct TicketPage {
     this.contentState = ContentState.LOADING;
     const result: NetworkResult<TicketOrderListResponse> = await this.service.listOrders();
     if (!result.successful || result.data === null) {
+      const cached: TicketOrder[] = TravelPersistenceStore.getInstance().loadTicketOrders(
+        AuthStore.getInstance().getUserId());
+      if (cached.length > 0 && result.error !== null && result.error.code === ApiErrorCode.OFFLINE) {
+        this.orders = cached;
+        this.contentState = ContentState.CONTENT;
+        this.operationMessage = '网络不可用，正在展示本地缓存订单与电子票';
+        return;
+      }
       this.contentState = ContentState.ERROR;
       this.errorMessage = this.errorText(result.error);
       return;
     }
     this.orders = result.data.items;
+    TravelPersistenceStore.getInstance().saveTicketOrders(AuthStore.getInstance().getUserId(), this.orders);
     this.contentState = this.orders.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
   }
 
@@ -224,6 +247,7 @@ export struct TicketPage {
       }
     }
     this.orders = updated;
+    TravelPersistenceStore.getInstance().saveTicketOrders(AuthStore.getInstance().getUserId(), this.orders);
   }
 
   private async pay(order: TicketOrder): Promise<void> {
@@ -292,6 +316,7 @@ export struct TicketPage {
       this.qrData = result.data.qr_data;
       this.qrTicketCode = result.data.ticket_code;
       this.qrExpiresAt = result.data.expires_at;
+      TravelPersistenceStore.getInstance().saveTicketIdentity(AuthStore.getInstance().getUserId(), result.data);
     } else {
       this.operationMessage = this.errorText(result.error);
     }

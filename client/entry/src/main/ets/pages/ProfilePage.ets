@@ -1,14 +1,20 @@
 import { AccessibilityView } from '../components/profile/AccessibilityView';
 import { GroupCollaborationView } from '../components/profile/GroupCollaborationView';
 import { SupportCenterView } from '../components/profile/SupportCenterView';
+import { OfflineEmergencyView } from '../components/profile/OfflineEmergencyView';
+import { PassportGreenView } from '../components/profile/PassportGreenView';
 import { AppConfig } from '../config/AppConfig';
 import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
+import { AuthStore } from '../stores/AuthStore';
+import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
 
 enum ProfileSection {
   OVERVIEW = 0,
   SUPPORT = 1,
   GROUP = 2,
-  ACCESSIBILITY = 3
+  ACCESSIBILITY = 3,
+  OFFLINE = 4,
+  PASSPORT = 5
 }
 
 @Component
@@ -21,7 +27,6 @@ export struct ProfilePage {
   @State section: ProfileSection = ProfileSection.OVERVIEW;
   @State largeText: boolean = false;
   @State highContrast: boolean = false;
-  @State offlinePackReady: boolean = false;
   @State apiUrl: string = AppConfig.getApiBaseUrl();
   @State configFeedback: string = '';
 
@@ -39,7 +44,7 @@ export struct ProfilePage {
 
   @Builder
   private sectionButton(label: string, value: ProfileSection) {
-    Button(label).layoutWeight(1).fontSize(this.largeText ? 14 : 10)
+    Button(label).width(this.largeText ? 132 : 108).fontSize(this.largeText ? 14 : 10)
       .fontColor(this.section === value ? (this.highContrast ? '#000000' : Color.White) :
         (this.highContrast ? '#FFFFFF' : $r('app.color.primary')))
       .backgroundColor(this.section === value ? (this.highContrast ? '#FFFF00' : $r('app.color.primary')) :
@@ -64,18 +69,16 @@ export struct ProfilePage {
       Column({ space: 10 }) {
         Row() {
           Column({ space: 3 }) {
-            Text('弱网离线旅行包').fontSize(this.largeText ? 18 : 14).fontWeight(FontWeight.Medium)
+            Text('弱网离线旅行包与应急助手').fontSize(this.largeText ? 18 : 14).fontWeight(FontWeight.Medium)
               .fontColor(this.highContrast ? '#FFFFFF' : $r('app.color.text_primary'))
-            Text(this.offlinePackReady ? '电子票、地图和行程已可离线使用' : '下载核心地图、电子票、行程与讲解')
+            Text('下载、完整性校验、outbox 同步与演示 SOS')
               .fontSize(this.largeText ? 14 : 10)
               .fontColor(this.highContrast ? '#FFFF00' : $r('app.color.text_secondary'))
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          Button(this.offlinePackReady ? '已下载' : '下载').fontSize(this.largeText ? 14 : 11)
-            .fontColor(this.offlinePackReady ? $r('app.color.success') : Color.White)
-            .backgroundColor(this.offlinePackReady ? $r('app.color.surface_tint') : $r('app.color.primary'))
-            .onClick(() => { this.offlinePackReady = true; })
+          Button('打开').fontSize(this.largeText ? 14 : 11).fontColor(Color.White)
+            .backgroundColor($r('app.color.primary')).onClick(() => { this.section = ProfileSection.OFFLINE; })
         }.width('100%')
-        Text('离线包仍为客户端演示状态；检查点 8 将补齐持久化和恢复同步。').width('100%')
+        Text('缓存按用户/schema/checksum 隔离；短期 QR bearer、密码和 Token 不落盘。').width('100%')
           .fontSize(this.largeText ? 12 : 8).fontColor(this.highContrast ? '#FFFF00' : $r('app.color.warning'))
       }.width('100%').padding(15).borderRadius(16)
         .backgroundColor(this.highContrast ? '#171717' : $r('app.color.surface'))
@@ -116,27 +119,45 @@ export struct ProfilePage {
             Button('立即登录').fontColor(this.highContrast ? '#000000' : Color.White)
               .backgroundColor(this.highContrast ? '#FFFF00' : $r('app.color.primary'))
               .onClick(() => { this.onLoginTap(); })
+          } else {
+            Button('退出').fontColor(this.highContrast ? '#000000' : $r('app.color.error'))
+              .backgroundColor(this.highContrast ? '#FFFF00' : $r('app.color.surface_tint'))
+              .onClick(() => {
+                AuthStore.getInstance().clearSession();
+                TravelPersistenceStore.getInstance().clearOfflineProfile();
+                this.loggedIn = false;
+                this.displayName = '游客';
+                this.section = ProfileSection.OVERVIEW;
+              })
           }
         }.width('100%').padding(17).borderRadius(18)
           .backgroundColor(this.highContrast ? '#171717' : $r('app.color.surface'))
-        Row({ space: 5 }) {
-          this.sectionButton('概览', ProfileSection.OVERVIEW)
-          this.sectionButton('客服服务', ProfileSection.SUPPORT)
-          this.sectionButton('同行协作', ProfileSection.GROUP)
-          this.sectionButton('无障碍', ProfileSection.ACCESSIBILITY)
-        }.width('100%')
+        Scroll() {
+          Row({ space: 5 }) {
+            this.sectionButton('概览', ProfileSection.OVERVIEW)
+            this.sectionButton('客服服务', ProfileSection.SUPPORT)
+            this.sectionButton('同行协作', ProfileSection.GROUP)
+            this.sectionButton('无障碍', ProfileSection.ACCESSIBILITY)
+            this.sectionButton('离线/应急', ProfileSection.OFFLINE)
+            this.sectionButton('护照/绿色', ProfileSection.PASSPORT)
+          }
+        }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
         if (this.section === ProfileSection.OVERVIEW) {
           this.overviewContent()
         } else if (this.section === ProfileSection.SUPPORT) {
           SupportCenterView({ loggedIn: this.loggedIn, onLoginTap: this.onLoginTap })
         } else if (this.section === ProfileSection.GROUP) {
           GroupCollaborationView({ loggedIn: this.loggedIn, onLoginTap: this.onLoginTap })
-        } else {
+        } else if (this.section === ProfileSection.ACCESSIBILITY) {
           AccessibilityView({
             onVisualChanged: (largeText: boolean, highContrast: boolean): void => {
               this.applyVisualSettings(largeText, highContrast);
             }
           })
+        } else if (this.section === ProfileSection.OFFLINE) {
+          OfflineEmergencyView({ loggedIn: this.loggedIn, onLoginTap: this.onLoginTap })
+        } else {
+          PassportGreenView({ loggedIn: this.loggedIn, onLoginTap: this.onLoginTap })
         }
       }.width('100%').constraintSize({ maxWidth: 960 })
         .padding({ left: 16, right: 16, top: 16, bottom: 30 })

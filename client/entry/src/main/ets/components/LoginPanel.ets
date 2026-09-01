@@ -1,6 +1,7 @@
 import { AuthTokenResponse, UserSession } from '../models/AppModels';
 import { AuthService } from '../network/services/AuthService';
 import { AuthStore } from '../stores/AuthStore';
+import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
 import { ValidationResult, validateCredentials } from '../utils/InputValidators';
 
 @Component
@@ -34,6 +35,7 @@ export struct LoginPanel {
     const session: UserSession = new UserSession(tokenResponse.user.id, resolvedDisplayName,
       tokenResponse.access_token, tokenResponse.refresh_token);
     AuthStore.getInstance().setSession(session);
+    TravelPersistenceStore.getInstance().saveOfflineProfile(session.userId, session.displayName);
     this.loggedIn = true;
     this.displayName = session.displayName.length > 0 ? session.displayName : this.username;
     this.password = '';

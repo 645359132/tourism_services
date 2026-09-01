@@ -1,6 +1,6 @@
 # 实施进度
 
-更新时间：2026-09-01（Asia/Shanghai）
+更新时间：2026-09-02（Asia/Shanghai）
 
 | 检查点 | 状态 | 证据/说明 |
 |---|---|---|
@@ -11,8 +11,8 @@
 | 5. 导览、人流与行程智能 | 已完成 | 规则行程/示意路线/模拟人流/冲突与安全重排；真实 WS 单调推送；server pytest 50 passed/67%；客户端 14 tests 与 HAP 通过 |
 | 6. 项目排队与餐住预约 | 已完成 | 原子预约/跨夜/组合、虚拟队列/FastPass、一次性 WS ticket；server pytest 60 passed/68%；客户端 22 tests、真实 REST/WS 与 HAP 通过 |
 | 7. 商城、客服、协作与无障碍 | 已完成 | 商城/积分/反馈/客服 WS/同行双重隐私/适老设施；server pytest 67 passed/70%；客户端 29 tests、真实 REST/WS 与 HAP 通过 |
-| 8. 离线应急与数字护照 | 进行中 | 正在实现离线旅行包、同步冲突、SOS、数字护照与绿色积分 |
-| 9. 综合质量与容量基线 | 待开始 | Docker CLI/Compose 可用，但本次盘点时 daemon 未运行 |
+| 8. 离线应急与数字护照 | 已完成 | 5 项离线资产/ETag 304/用户隔离缓存与 outbox/只读冷启动/SOS Demo/护照与绿色积分；server pytest 73 passed/70%；客户端 37 tests、真实 REST 与 HAP 通过；phone/tablet 720vp 分栏实现 |
+| 9. 综合质量与容量基线 | 进行中 | Docker CLI/Compose 可用但 daemon 未运行；准备真实 smoke、Locust、Redis 降级与安全/性能回归 |
 | 10. 文档与最终验收 | 待开始 |  |
 
 已确认的环境约束：

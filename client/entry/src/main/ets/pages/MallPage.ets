@@ -33,6 +33,9 @@ import {
   validateShare
 } from '../utils/ShopRules';
 import { PendingIdempotentOperation, formatMoney } from '../utils/TicketRules';
+import { AuthStore } from '../stores/AuthStore';
+import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
+import { isWideWindow } from '../utils/ResponsiveRules';
 
 enum MallSection {
   CATALOG = 0,
@@ -167,6 +170,7 @@ export struct MallPage {
       return;
     }
     this.orders = orderResult.data.items;
+    TravelPersistenceStore.getInstance().saveShopOrders(AuthStore.getInstance().getUserId(), this.orders);
     const accountResult: NetworkResult<PointsAccount> = await this.service.getPointsAccount();
     if (!accountResult.successful || accountResult.data === null) {
       this.privateState = this.stateForError(accountResult.error);
@@ -210,6 +214,7 @@ export struct MallPage {
       updated.unshift(value);
     }
     this.orders = updated;
+    TravelPersistenceStore.getInstance().saveShopOrders(AuthStore.getInstance().getUserId(), this.orders);
   }
 
   private async addToCart(product: ShopProduct): Promise<void> {
@@ -654,6 +659,6 @@ export struct MallPage {
       }.width('100%').constraintSize({ maxWidth: 960 })
         .padding({ left: 16, right: 16, top: 16, bottom: 30 })
     }.width('100%').height('100%').scrollBar(BarState.Off).backgroundColor($r('app.color.page_background'))
-      .onAreaChange((_oldArea: Area, newArea: Area) => { this.isWide = Number(newArea.width) >= 760; })
+      .onAreaChange((_oldArea: Area, newArea: Area) => { this.isWide = isWideWindow(Number(newArea.width)); })
   }
 }
