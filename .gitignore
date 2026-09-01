@@ -1,0 +1,59 @@
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.uv-cache/
+client/local.properties
+
+# IDE and HarmonyOS local state
+.idea/
+.hvigor/
+oh_modules/
+node_modules/
+.preview/
+.appanalyzer/
+.cxx/
+.clangd/
+.test/
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build and package outputs
+build/
+dist/
+*.hap
+*.app
+*.har
+*.hsp
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.pem
+*.key
+*.p7b
+
+# Runtime data
+*.log
+*.sqlite
+*.sqlite3
+*.db
+uploads/
+data/
+docker-data/
+
+# OS noise
+.DS_Store
+Thumbs.db
+Desktop.ini
