@@ -1,45 +1,295 @@
-import { ScenicSpot } from '../models/AppModels';
-
-const GUIDE_SPOTS: ScenicSpot[] = [
-  new ScenicSpot('gate', '游客中心', '票务、咨询、寄存与无障碍服务', '距您 120m', '开放中'),
-  new ScenicSpot('museum', '云山文化馆', '地方历史与非遗数字讲解', '步行 6 分钟', '舒适'),
-  new ScenicSpot('lake', '镜湖观景台', '亲水栈道与日落最佳机位', '步行 12 分钟', '较拥挤')
-];
+import { StatePanel } from '../components/StatePanel';
+import {
+  Attraction,
+  AttractionListResponse,
+  CrowdItem,
+  CrowdLevel,
+  CrowdResponse,
+  GuideMapNode,
+  GuideMapResponse,
+  Narration,
+  NarrationListResponse,
+  RoutePlanResponse
+} from '../models/GuideModels';
+import { ApiErrorCode, ApiErrorInfo } from '../network/ApiError';
+import { CrowdSocket, CrowdSocketState } from '../network/CrowdSocket';
+import { NetworkResult } from '../network/HttpClient';
+import { GuideService } from '../network/services/GuideService';
+import { buildCrowdAlternative, shouldAcceptCrowdSequence } from '../utils/GuideRules';
+import { ContentState } from '../models/AppModels';
 
 @Component
 export struct GuidePage {
+  @State contentState: ContentState = ContentState.LOADING;
+  @State errorMessage: string = '';
+  @State attractions: Attraction[] = [];
+  @State mapData: GuideMapResponse | null = null;
+  @State crowdItems: CrowdItem[] = [];
+  @State crowdSequence: number = -1;
+  @State crowdCapturedAt: string = '';
+  @State socketState: CrowdSocketState = CrowdSocketState.CONNECTING;
+  @State socketMessage: string = '正在连接模拟人流服务';
+  @State alternativeSuggestion: string = '';
+  @State selectedDetail: Attraction | null = null;
+  @State narrations: Narration[] = [];
+  @State playingNarrationId: string = '';
+  @State operationMessage: string = '';
+  @State operationBusy: boolean = false;
+  @State showHeat: boolean = true;
+  @State locationDemo: boolean = false;
+  @State originNodeId: string = '';
+  @State targetNodeId: string = '';
+  @State wheelchair: boolean = false;
+  @State stroller: boolean = false;
+  @State routePlan: RoutePlanResponse | null = null;
+  private service: GuideService = new GuideService();
+  private crowdSocket: CrowdSocket | null = null;
+
+  aboutToAppear(): void {
+    this.loadAll();
+    this.startCrowdSocket();
+  }
+
+  aboutToDisappear(): void {
+    if (this.crowdSocket !== null) {
+      this.crowdSocket.stop();
+      this.crowdSocket = null;
+    }
+  }
+
+  private stateForError(error: ApiErrorInfo | null): ContentState {
+    if (error !== null && error.code === ApiErrorCode.OFFLINE) {
+      return ContentState.OFFLINE;
+    }
+    if (error !== null && (error.code === ApiErrorCode.UNAUTHORIZED || error.code === ApiErrorCode.FORBIDDEN)) {
+      return ContentState.NO_PERMISSION;
+    }
+    return ContentState.ERROR;
+  }
+
+  private errorText(error: ApiErrorInfo | null): string {
+    return error === null ? '导览服务请求失败，请稍后重试' : error.userMessage;
+  }
+
+  private async loadAll(): Promise<void> {
+    this.contentState = ContentState.LOADING;
+    this.errorMessage = '';
+    const attractionResult: NetworkResult<AttractionListResponse> = await this.service.listAttractions();
+    if (!attractionResult.successful || attractionResult.data === null) {
+      this.contentState = this.stateForError(attractionResult.error);
+      this.errorMessage = this.errorText(attractionResult.error);
+      return;
+    }
+    this.attractions = attractionResult.data.items;
+    if (this.crowdItems.length > 0) {
+      this.mergeCrowdIntoAttractions(this.crowdItems);
+      this.alternativeSuggestion = buildCrowdAlternative(this.attractions, this.crowdItems);
+    }
+    if (this.attractions.length === 0) {
+      this.contentState = ContentState.EMPTY;
+      return;
+    }
+    const mapResult: NetworkResult<GuideMapResponse> = await this.service.getMap();
+    if (!mapResult.successful || mapResult.data === null) {
+      this.contentState = this.stateForError(mapResult.error);
+      this.errorMessage = this.errorText(mapResult.error);
+      return;
+    }
+    this.mapData = mapResult.data;
+    if (this.mapData.nodes.length > 0) {
+      this.originNodeId = this.mapData.nodes[0].id;
+      this.targetNodeId = this.mapData.nodes.length > 1 ? this.mapData.nodes[1].id : this.mapData.nodes[0].id;
+    }
+    const crowdResult: NetworkResult<CrowdResponse> = await this.service.getCrowd();
+    if (!crowdResult.successful || crowdResult.data === null) {
+      this.contentState = this.stateForError(crowdResult.error);
+      this.errorMessage = this.errorText(crowdResult.error);
+      return;
+    }
+    this.acceptCrowdSnapshot(crowdResult.data);
+    this.contentState = ContentState.CONTENT;
+  }
+
+  private startCrowdSocket(): void {
+    if (this.crowdSocket === null) {
+      this.crowdSocket = new CrowdSocket((snapshot: CrowdResponse): void => {
+        this.acceptCrowdSnapshot(snapshot);
+      }, (state: CrowdSocketState, message: string): void => {
+        this.socketState = state;
+        this.socketMessage = message;
+      });
+    }
+    this.crowdSocket.start();
+  }
+
+  private acceptCrowdSnapshot(snapshot: CrowdResponse): void {
+    if (!shouldAcceptCrowdSequence(this.crowdSequence, snapshot.sequence)) {
+      return;
+    }
+    this.crowdSequence = snapshot.sequence;
+    this.crowdCapturedAt = snapshot.items.length > 0 ? snapshot.items[0].captured_at : '';
+    this.crowdItems = snapshot.items;
+    this.mergeCrowdIntoAttractions(snapshot.items);
+    this.alternativeSuggestion = buildCrowdAlternative(this.attractions, this.crowdItems);
+  }
+
+  private mergeCrowdIntoAttractions(crowdItems: CrowdItem[]): void {
+    const updatedAttractions: Attraction[] = this.attractions.slice();
+    for (let crowdIndex: number = 0; crowdIndex < crowdItems.length; crowdIndex++) {
+      for (let attractionIndex: number = 0; attractionIndex < updatedAttractions.length; attractionIndex++) {
+        if (updatedAttractions[attractionIndex].id === crowdItems[crowdIndex].attraction_id) {
+          updatedAttractions[attractionIndex].crowd_level = crowdItems[crowdIndex].level;
+          updatedAttractions[attractionIndex].occupancy_bps = crowdItems[crowdIndex].occupancy_bps;
+          updatedAttractions[attractionIndex].wait_minutes = crowdItems[crowdIndex].wait_minutes;
+        }
+      }
+    }
+    this.attractions = updatedAttractions;
+  }
+
+  private crowdLevelForNode(nodeId: string): CrowdLevel {
+    for (let index: number = 0; index < this.attractions.length; index++) {
+      if (this.attractions[index].node_id === nodeId) {
+        return this.attractions[index].crowd_level;
+      }
+    }
+    return CrowdLevel.LOW;
+  }
+
+  private async refreshCrowd(): Promise<void> {
+    this.operationBusy = true;
+    const result: NetworkResult<CrowdResponse> = await this.service.getCrowd();
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      this.acceptCrowdSnapshot(result.data);
+      this.operationMessage = '已读取最新模拟人流 REST 快照';
+    } else {
+      this.operationMessage = this.errorText(result.error);
+    }
+  }
+
+  private async showAttractionDetail(attractionId: string): Promise<void> {
+    this.operationBusy = true;
+    this.operationMessage = '';
+    const detailResult: NetworkResult<Attraction> = await this.service.getAttraction(attractionId);
+    if (!detailResult.successful || detailResult.data === null) {
+      this.operationBusy = false;
+      this.operationMessage = this.errorText(detailResult.error);
+      return;
+    }
+    this.selectedDetail = detailResult.data;
+    const narrationResult: NetworkResult<NarrationListResponse> = await this.service.listNarrations(attractionId);
+    this.operationBusy = false;
+    if (narrationResult.successful && narrationResult.data !== null) {
+      this.narrations = narrationResult.data.items;
+    } else {
+      this.narrations = [];
+      this.operationMessage = this.errorText(narrationResult.error);
+    }
+  }
+
+  private nodeName(nodeId: string): string {
+    if (this.mapData === null) {
+      return '未选择';
+    }
+    for (let index: number = 0; index < this.mapData.nodes.length; index++) {
+      if (this.mapData.nodes[index].id === nodeId) {
+        return this.mapData.nodes[index].name;
+      }
+    }
+    return '未选择';
+  }
+
+  private cycleNode(currentNodeId: string): string {
+    if (this.mapData === null || this.mapData.nodes.length === 0) {
+      return '';
+    }
+    for (let index: number = 0; index < this.mapData.nodes.length; index++) {
+      if (this.mapData.nodes[index].id === currentNodeId) {
+        return this.mapData.nodes[(index + 1) % this.mapData.nodes.length].id;
+      }
+    }
+    return this.mapData.nodes[0].id;
+  }
+
+  private async planAccessibleRoute(): Promise<void> {
+    if (this.originNodeId.length === 0 || this.targetNodeId.length === 0 ||
+      this.originNodeId === this.targetNodeId) {
+      this.operationMessage = '请选择不同的起点和终点';
+      return;
+    }
+    this.operationBusy = true;
+    const result: NetworkResult<RoutePlanResponse> = await this.service.planRoute(
+      this.originNodeId, this.targetNodeId, this.wheelchair, this.stroller);
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      this.routePlan = result.data;
+      this.operationMessage = '已由示意地图规则计算路线';
+    } else {
+      this.routePlan = null;
+      this.operationMessage = this.errorText(result.error);
+    }
+  }
+
   @Builder
-  private spotCard(spot: ScenicSpot) {
-    Row({ space: 14 }) {
+  private mapNode(node: GuideMapNode) {
+    Column({ space: 4 }) {
+      Text(node.kind === 'MEDICAL' ? '医' : node.kind === 'TOILET' ? '厕' : node.kind === 'REST' ? '休' : '●')
+        .fontSize(18)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(!this.showHeat ? $r('app.color.primary') :
+          this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
+            this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') : $r('app.color.success'))
+      Text(node.name)
+        .fontSize(12)
+        .fontColor($r('app.color.text_primary'))
+        .maxLines(1)
+      Text(`示意坐标 ${node.x}, ${node.y}`)
+        .fontSize(9)
+        .fontColor($r('app.color.text_secondary'))
+    }
+    .width('31%')
+    .height(78)
+    .justifyContent(FlexAlign.Center)
+    .borderRadius(14)
+    .border({ width: this.showHeat ? 2 : 0,
+      color: this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
+        this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') : $r('app.color.success') })
+    .backgroundColor($r('app.color.surface_tint'))
+  }
+
+  @Builder
+  private attractionCard(item: Attraction) {
+    Row({ space: 12 }) {
       Column() {
-        Text(spot.id === 'museum' ? '文' : spot.id === 'lake' ? '景' : '服')
+        Text(item.category.length > 0 ? item.category.substring(0, 1) : '景')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.primary'))
       }
-      .width(52)
-      .height(52)
+      .width(50)
+      .height(50)
       .justifyContent(FlexAlign.Center)
-      .borderRadius(16)
+      .borderRadius(15)
       .backgroundColor($r('app.color.surface_tint'))
-
       Column({ space: 4 }) {
         Row() {
-          Text(spot.name)
+          Text(item.name)
             .fontSize(16)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.text_primary'))
             .layoutWeight(1)
-          Text(spot.openStatus)
+          Text(item.crowd_level === CrowdLevel.HIGH ? '拥挤' : item.crowd_level === CrowdLevel.MEDIUM ? '较舒适' : '舒适')
             .fontSize(11)
-            .fontColor(spot.openStatus === '较拥挤' ? $r('app.color.warning') : $r('app.color.success'))
+            .fontColor(item.crowd_level === CrowdLevel.HIGH ? $r('app.color.error') :
+              item.crowd_level === CrowdLevel.MEDIUM ? $r('app.color.warning') : $r('app.color.success'))
         }
         .width('100%')
-        Text(spot.description)
-          .fontSize(12)
+        Text(`${item.description} · 建议游览 ${item.visit_minutes} 分钟`)
+          .fontSize(11)
           .fontColor($r('app.color.text_secondary'))
           .maxLines(1)
-        Text(spot.distanceText)
+        Text(`模拟人流 ${item.occupancy_bps / 100}% · 等待 ${item.wait_minutes} 分钟`)
           .fontSize(11)
           .fontColor($r('app.color.primary'))
       }
@@ -47,73 +297,255 @@ export struct GuidePage {
       .layoutWeight(1)
     }
     .width('100%')
-    .padding(15)
-    .borderRadius(18)
+    .padding(14)
+    .borderRadius(17)
     .backgroundColor($r('app.color.surface'))
+    .onClick(() => {
+      this.showAttractionDetail(item.id);
+    })
   }
 
   build() {
     Scroll() {
       Column({ space: 16 }) {
-        Column({ space: 12 }) {
+        if (this.contentState !== ContentState.CONTENT) {
+          StatePanel({
+            state: this.contentState,
+            message: this.errorMessage,
+            onRetry: (): void => {
+              this.loadAll();
+              this.startCrowdSocket();
+            }
+          })
+        } else {
           Row() {
-            Text('景区示意导览')
-              .fontSize(20)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-              .layoutWeight(1)
-            Text('地图适配器 · 演示')
+            Column({ space: 3 }) {
+              Text('景区示意地图')
+                .fontSize(20)
+                .fontWeight(FontWeight.Bold)
+                .fontColor($r('app.color.text_primary'))
+              Text(this.mapData === null ? 'Provider 未加载' :
+                `Provider=${this.mapData.provider.mode} · demo=${this.mapData.provider.is_demo}`)
+                .fontSize(11)
+                .fontColor($r('app.color.warning'))
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.showHeat })
+              .selectedColor($r('app.color.warning'))
+              .onChange((value: boolean) => {
+                this.showHeat = value;
+              })
+          }
+          .width('100%')
+
+          if (this.mapData !== null) {
+            Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignContent: FlexAlign.SpaceBetween }) {
+              ForEach(this.mapData.nodes, (node: GuideMapNode) => {
+                this.mapNode(node)
+              }, (node: GuideMapNode) => node.id)
+            }
+            .width('100%')
+            .padding(12)
+            .borderRadius(20)
+            .backgroundColor($r('app.color.surface'))
+            Text(this.mapData.provider.description)
+              .width('100%')
               .fontSize(11)
               .fontColor($r('app.color.text_secondary'))
           }
+
+          Row({ space: 8 }) {
+            Button(this.locationDemo ? '已定位（演示）' : '定位演示')
+              .fontSize(12)
+              .fontColor(Color.White)
+              .backgroundColor($r('app.color.primary'))
+              .onClick(() => {
+                this.locationDemo = !this.locationDemo;
+              })
+            Button('REST 刷新人流')
+              .fontSize(12)
+              .fontColor($r('app.color.warning'))
+              .backgroundColor($r('app.color.surface_tint'))
+              .onClick(() => {
+                this.refreshCrowd();
+              })
+            Button('重连推送')
+              .fontSize(12)
+              .fontColor($r('app.color.primary'))
+              .backgroundColor($r('app.color.surface_tint'))
+              .onClick(() => {
+                if (this.crowdSocket !== null) {
+                  this.crowdSocket.stop();
+                }
+                this.startCrowdSocket();
+              })
+          }
           .width('100%')
-          Stack({ alignContent: Alignment.Center }) {
-            Column({ space: 16 }) {
-              Row({ space: 55 }) {
-                Text('● 文化馆').fontColor($r('app.color.primary'))
-                Text('● 观景台').fontColor($r('app.color.warning'))
-              }
-              Text('······  推荐低拥堵路线  ······')
+
+          Text(`${this.socketMessage} · sequence=${this.crowdSequence} · source=simulated`)
+            .width('100%')
+            .padding(11)
+            .borderRadius(12)
+            .fontSize(11)
+            .fontColor(this.socketState === CrowdSocketState.CONNECTED ? $r('app.color.success') : $r('app.color.warning'))
+            .backgroundColor($r('app.color.surface_tint'))
+
+          if (this.showHeat) {
+            Row({ space: 8 }) {
+              Text('低').fontColor($r('app.color.success'))
+              Text('中').fontColor($r('app.color.warning'))
+              Text('高').fontColor($r('app.color.error'))
+              Text(`模拟热力快照 ${this.crowdCapturedAt}`)
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+                .layoutWeight(1)
+            }
+            .width('100%')
+          }
+
+          Text(this.alternativeSuggestion)
+            .width('100%')
+            .padding(13)
+            .borderRadius(14)
+            .fontSize(12)
+            .fontColor($r('app.color.primary'))
+            .backgroundColor($r('app.color.surface_tint'))
+
+          Column({ space: 10 }) {
+            Text('无障碍路线（示意图规则）')
+              .width('100%')
+              .fontSize(17)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary'))
+            Row({ space: 8 }) {
+              Button(`起点：${this.nodeName(this.originNodeId)}`)
+                .layoutWeight(1)
+                .fontSize(11)
+                .onClick(() => {
+                  this.originNodeId = this.cycleNode(this.originNodeId);
+                })
+              Button(`终点：${this.nodeName(this.targetNodeId)}`)
+                .layoutWeight(1)
+                .fontSize(11)
+                .onClick(() => {
+                  this.targetNodeId = this.cycleNode(this.targetNodeId);
+                })
+            }
+            .width('100%')
+            Row() {
+              Text('轮椅路线').fontColor($r('app.color.text_primary')).layoutWeight(1)
+              Toggle({ type: ToggleType.Switch, isOn: this.wheelchair }).onChange((value: boolean) => {
+                this.wheelchair = value;
+              })
+              Text('亲子推车').fontColor($r('app.color.text_primary')).layoutWeight(1)
+              Toggle({ type: ToggleType.Switch, isOn: this.stroller }).onChange((value: boolean) => {
+                this.stroller = value;
+              })
+            }
+            .width('100%')
+            Button(this.operationBusy ? '计算中…' : '规划路线')
+              .enabled(!this.operationBusy)
+              .width('100%')
+              .fontColor(Color.White)
+              .backgroundColor($r('app.color.primary'))
+              .onClick(() => {
+                this.planAccessibleRoute();
+              })
+            if (this.routePlan !== null) {
+              Text(`${this.routePlan.distance_m} 米 · 约 ${this.routePlan.walk_minutes} 分钟 · ` +
+                `${this.routePlan.accessible ? '满足无障碍条件' : '存在无障碍限制'}`)
+                .width('100%')
                 .fontSize(12)
-                .fontColor($r('app.color.success'))
-              Row({ space: 58 }) {
-                Text('◎ 我的位置').fontColor($r('app.color.primary'))
-                Text('● 游客中心').fontColor($r('app.color.text_secondary'))
-              }
+                .fontColor(this.routePlan.accessible ? $r('app.color.success') : $r('app.color.warning'))
+              Text(this.routePlan.explanation.join(' · '))
+                .width('100%')
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
             }
           }
           .width('100%')
-          .height(190)
-          .borderRadius(20)
-          .backgroundColor($r('app.color.surface_tint'))
-          Row({ space: 8 }) {
-            Button('定位演示')
-              .fontColor(Color.White)
-              .backgroundColor($r('app.color.primary'))
-            Button('人流热力')
-              .fontColor($r('app.color.warning'))
-              .backgroundColor($r('app.color.surface'))
-            Button('语音讲解')
-              .fontColor($r('app.color.primary'))
-              .backgroundColor($r('app.color.surface'))
-          }
-          .width('100%')
-        }
-        .padding(18)
-        .borderRadius(24)
-        .backgroundColor($r('app.color.surface'))
+          .padding(16)
+          .borderRadius(19)
+          .backgroundColor($r('app.color.surface'))
 
-        Text('附近景点')
-          .width('100%')
-          .fontSize(18)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
-        ForEach(GUIDE_SPOTS, (spot: ScenicSpot) => {
-          this.spotCard(spot)
-        }, (spot: ScenicSpot) => spot.id)
+          Text('真实接口景点')
+            .width('100%')
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+          ForEach(this.attractions, (item: Attraction) => {
+            this.attractionCard(item)
+          }, (item: Attraction) => item.id)
+
+          if (this.selectedDetail !== null) {
+            Column({ space: 10 }) {
+              Row() {
+                Text(this.selectedDetail.name)
+                  .fontSize(19)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor($r('app.color.text_primary'))
+                  .layoutWeight(1)
+                Button('关闭').fontSize(11).onClick(() => {
+                  this.selectedDetail = null;
+                  this.narrations = [];
+                  this.playingNarrationId = '';
+                })
+              }
+              .width('100%')
+              Text(this.selectedDetail.description)
+                .width('100%')
+                .fontSize(13)
+                .fontColor($r('app.color.text_secondary'))
+              ForEach(this.narrations, (narration: Narration) => {
+                Column({ space: 7 }) {
+                  Row() {
+                    Text(narration.title)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor($r('app.color.text_primary'))
+                      .layoutWeight(1)
+                    Button(this.playingNarrationId === narration.id ? '暂停' : '播放文字讲解')
+                      .fontSize(11)
+                      .fontColor($r('app.color.primary'))
+                      .backgroundColor($r('app.color.surface_tint'))
+                      .onClick(() => {
+                        this.playingNarrationId = this.playingNarrationId === narration.id ? '' : narration.id;
+                      })
+                  }
+                  .width('100%')
+                  Text(narration.transcript)
+                    .width('100%')
+                    .fontSize(12)
+                    .fontColor($r('app.color.text_secondary'))
+                    .maxLines(this.playingNarrationId === narration.id ? 8 : 2)
+                  Text(`provider=${narration.provider_mode} · demo=${narration.is_demo} · 未接入真实音频版权源`)
+                    .width('100%')
+                    .fontSize(10)
+                    .fontColor($r('app.color.warning'))
+                }
+                .width('100%')
+                .padding(12)
+                .borderRadius(13)
+                .backgroundColor($r('app.color.page_background'))
+              }, (narration: Narration) => narration.id)
+            }
+            .width('100%')
+            .padding(17)
+            .borderRadius(20)
+            .backgroundColor($r('app.color.surface'))
+          }
+
+          if (this.operationMessage.length > 0) {
+            Text(this.operationMessage)
+              .width('100%')
+              .fontSize(11)
+              .fontColor($r('app.color.warning'))
+          }
+        }
       }
       .width('100%')
-      .padding({ left: 18, right: 18, top: 18, bottom: 28 })
+      .constraintSize({ maxWidth: 820 })
+      .padding({ left: 18, right: 18, top: 18, bottom: 30 })
     }
     .width('100%')
     .height('100%')

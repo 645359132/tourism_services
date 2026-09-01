@@ -14,13 +14,19 @@ from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
-from app.db.session import dispose_database
+from app.db.session import dispose_database, get_session_factory
+from app.realtime.crowd import ConnectionHub, CrowdPublisher
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    yield
-    await dispose_database()
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    publisher: CrowdPublisher = application.state.crowd_publisher
+    publisher.start()
+    try:
+        yield
+    finally:
+        await publisher.stop()
+        await dispose_database()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,6 +45,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    application.state.crowd_hub = ConnectionHub()
+    application.state.crowd_publisher = CrowdPublisher(
+        hub=application.state.crowd_hub,
+        session_factory_provider=get_session_factory,
+        interval_seconds=resolved_settings.crowd_publish_interval_seconds,
+    )
 
     register_exception_handlers(application)
     application.add_middleware(RequestContextMiddleware)

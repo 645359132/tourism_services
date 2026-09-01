@@ -43,7 +43,8 @@ export struct TicketPage {
   @State errorMessage: string = '';
   @State ticketTypes: TicketType[] = [];
   @State selectedTypeId: string = '';
-  @State visitDate: string = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
+  @State visitDate: string =
+    new Date(Date.now() + (24 + 8) * 60 * 60 * 1000).toISOString().substring(0, 10);
   @State slots: TicketSlot[] = [];
   @State selectedSlotId: string = '';
   @State quantity: number = 1;

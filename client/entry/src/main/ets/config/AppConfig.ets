@@ -10,6 +10,14 @@ export class AppConfig {
     return AppConfig.apiBaseUrl;
   }
 
+  static getCrowdWebSocketUrl(): string {
+    const baseUrl: string = AppConfig.apiBaseUrl;
+    if (baseUrl.startsWith('https://')) {
+      return `wss://${baseUrl.substring(8)}/guide/ws/crowd`;
+    }
+    return `ws://${baseUrl.substring(7)}/guide/ws/crowd`;
+  }
+
   static setApiBaseUrl(value: string): boolean {
     let normalized: string = value.trim();
     if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {

@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     ticket_quote_ttl_seconds: int = Field(default=300, ge=30, le=1800)
     ticket_qr_ttl_seconds: int = Field(default=300, ge=30, le=900)
     ticket_refund_cutoff_hours: int = Field(default=24, ge=0, le=168)
+    crowd_publish_interval_seconds: float = Field(default=30.0, ge=0.1, le=3600)
 
     @field_validator("database_url", mode="before")
     @classmethod

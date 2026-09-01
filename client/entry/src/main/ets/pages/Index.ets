@@ -61,7 +61,12 @@ struct Index {
     } else if (this.selected === MainDestination.GUIDE) {
       GuidePage()
     } else if (this.selected === MainDestination.TRIP) {
-      TripPage()
+      TripPage({
+        loggedIn: this.loggedIn,
+        onLoginTap: (): void => {
+          this.showLogin = true;
+        }
+      })
     } else if (this.selected === MainDestination.MALL) {
       MallPage()
     } else if (this.selected === MainDestination.PROFILE) {
