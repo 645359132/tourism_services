@@ -11,6 +11,21 @@ from app.db.models.guide import (
     RouteEdge,
     RouteNode,
 )
+from app.db.models.marketplace import (
+    BundleComponent,
+    Experience,
+    ExperienceSession,
+    FastPass,
+    HospitalityOffer,
+    HospitalityVenue,
+    InventoryBucket,
+    QueueCounter,
+    QueueEntry,
+    Reservation,
+    ReservationAllocation,
+    Review,
+    UserScheduleLock,
+)
 from app.db.models.preference import TouristPreference
 from app.db.models.refresh_session import RefreshSession
 from app.db.models.role import Role, UserRole
@@ -31,17 +46,29 @@ from app.db.models.user import User
 
 __all__ = [
     "Attraction",
+    "BundleComponent",
     "ConflictCheck",
     "CrowdSnapshot",
     "DynamicPriceRule",
     "ElectronicTicket",
+    "Experience",
+    "ExperienceSession",
+    "FastPass",
+    "HospitalityOffer",
+    "HospitalityVenue",
+    "InventoryBucket",
     "Itinerary",
     "ItineraryItem",
     "Narration",
     "PlanRun",
+    "QueueCounter",
+    "QueueEntry",
     "RefreshSession",
     "RefundRequest",
     "RescheduleRequest",
+    "Reservation",
+    "ReservationAllocation",
+    "Review",
     "Role",
     "RouteEdge",
     "RouteNode",
@@ -55,4 +82,5 @@ __all__ = [
     "TouristPreference",
     "User",
     "UserRole",
+    "UserScheduleLock",
 ]

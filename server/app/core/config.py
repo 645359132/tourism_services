@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     ticket_qr_ttl_seconds: int = Field(default=300, ge=30, le=900)
     ticket_refund_cutoff_hours: int = Field(default=24, ge=0, le=168)
     crowd_publish_interval_seconds: float = Field(default=30.0, ge=0.1, le=3600)
+    reservation_hold_minutes: int = Field(default=15, ge=1, le=120)
+    reservation_walking_buffer_minutes: int = Field(default=10, ge=0, le=120)
+    queue_publish_interval_seconds: float = Field(default=15.0, ge=0.1, le=3600)
+    ws_ticket_ttl_seconds: int = Field(default=60, ge=10, le=300)
+    fastpass_valid_minutes: int = Field(default=60, ge=5, le=240)
 
     @field_validator("database_url", mode="before")
     @classmethod

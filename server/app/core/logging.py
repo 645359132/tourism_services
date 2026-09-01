@@ -5,11 +5,45 @@ from __future__ import annotations
 import json
 import logging
 import logging.config
+import re
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
 request_id_context: ContextVar[str] = ContextVar("request_id", default="-")
+SENSITIVE_QUERY_PATTERN = re.compile(r"(?i)(?P<prefix>\bticket=)[^&#\s\"',)\]]+")
+
+
+def _redact_sensitive_query(value: Any, *, field_name: str | None = None) -> Any:
+    """Return logging values with queue WebSocket tickets removed."""
+
+    if field_name is not None and field_name.casefold() == "ticket":
+        return "<redacted>"
+    if isinstance(value, str):
+        return SENSITIVE_QUERY_PATTERN.sub(
+            r"\g<prefix><redacted>",
+            value,
+        )
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_query(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_sensitive_query(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_query(item, field_name=str(key)) for key, item in value.items()
+        }
+    return value
+
+
+class SensitiveQueryFilter(logging.Filter):
+    """Redact one-time credentials before any formatter renders a record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact_sensitive_query(record.msg)
+        record.args = _redact_sensitive_query(record.args)
+        if hasattr(record, "path"):
+            record.path = _redact_sensitive_query(record.path)
+        return True
 
 
 class JsonFormatter(logging.Formatter):
@@ -47,7 +81,10 @@ def configure_logging(level: str = "INFO", *, json_logs: bool = False) -> None:
         {
             "version": 1,
             "disable_existing_loggers": False,
-            "filters": {"request_id": {"()": RequestIdFilter}},
+            "filters": {
+                "request_id": {"()": RequestIdFilter},
+                "sensitive_query": {"()": SensitiveQueryFilter},
+            },
             "formatters": {
                 "plain": {
                     "format": (
@@ -59,7 +96,7 @@ def configure_logging(level: str = "INFO", *, json_logs: bool = False) -> None:
             "handlers": {
                 "default": {
                     "class": "logging.StreamHandler",
-                    "filters": ["request_id"],
+                    "filters": ["sensitive_query", "request_id"],
                     "formatter": formatter,
                     "stream": "ext://sys.stdout",
                 }
@@ -67,6 +104,11 @@ def configure_logging(level: str = "INFO", *, json_logs: bool = False) -> None:
             "root": {"handlers": ["default"], "level": level},
             "loggers": {
                 "uvicorn": {"handlers": ["default"], "level": level, "propagate": False},
+                "uvicorn.error": {
+                    "handlers": ["default"],
+                    "level": level,
+                    "propagate": False,
+                },
                 "uvicorn.access": {
                     "handlers": ["default"],
                     "level": level,

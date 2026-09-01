@@ -9,6 +9,7 @@ import { MallPage } from './MallPage';
 import { ProfilePage } from './ProfilePage';
 import { TripPage } from './TripPage';
 import { TicketPage } from './TicketPage';
+import { BookingPage } from './BookingPage';
 
 @Entry
 @Component
@@ -20,6 +21,8 @@ struct Index {
   @State displayName: string = '游客';
   @State isTablet: boolean = false;
   @State showTicketing: boolean = false;
+  @State showBooking: boolean = false;
+  @State bookingInitialSection: number = 0;
 
   aboutToAppear(): void {
     const authStore: AuthStore = AuthStore.getInstance();
@@ -30,6 +33,9 @@ struct Index {
   private currentTitle(): string {
     if (this.showTicketing) {
       return '门票预约';
+    }
+    if (this.showBooking) {
+      return '项目排队与餐住';
     }
     if (this.selected === MainDestination.GUIDE) {
       return '智慧导览';
@@ -58,6 +64,21 @@ struct Index {
           this.showLogin = true;
         }
       })
+    } else if (this.showBooking) {
+      BookingPage({
+        loggedIn: this.loggedIn,
+        initialSection: this.bookingInitialSection,
+        onBack: (): void => {
+          this.showBooking = false;
+        },
+        onLoginTap: (): void => {
+          this.showLogin = true;
+        },
+        onTripTap: (): void => {
+          this.showBooking = false;
+          this.selected = MainDestination.TRIP;
+        }
+      })
     } else if (this.selected === MainDestination.GUIDE) {
       GuidePage()
     } else if (this.selected === MainDestination.TRIP) {
@@ -82,6 +103,14 @@ struct Index {
         contentState: $contentState,
         onTicketTap: (): void => {
           this.showTicketing = true;
+        },
+        onQueueTap: (): void => {
+          this.bookingInitialSection = 0;
+          this.showBooking = true;
+        },
+        onHospitalityTap: (): void => {
+          this.bookingInitialSection = 1;
+          this.showBooking = true;
         }
       })
     }
@@ -90,7 +119,7 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.Center }) {
       Row() {
-        if (this.isTablet && !this.showTicketing) {
+        if (this.isTablet && !this.showTicketing && !this.showBooking) {
           SideNavigation({ selected: $selected })
         }
         Column() {
@@ -107,7 +136,7 @@ struct Index {
           }
           .layoutWeight(1)
           .width('100%')
-          if (!this.isTablet && !this.showTicketing) {
+          if (!this.isTablet && !this.showTicketing && !this.showBooking) {
             BottomNavigation({ selected: $selected })
           }
         }

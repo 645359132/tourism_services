@@ -5,6 +5,8 @@ import { ContentState } from '../models/AppModels';
 export struct HomePage {
   @Link contentState: ContentState;
   onTicketTap: () => void = (): void => {};
+  onQueueTap: () => void = (): void => {};
+  onHospitalityTap: () => void = (): void => {};
 
   @Builder
   private quickService(icon: string, title: string, caption: string) {
@@ -28,6 +30,10 @@ export struct HomePage {
     .onClick(() => {
       if (title === '门票预约') {
         this.onTicketTap();
+      } else if (title === '智慧排队') {
+        this.onQueueTap();
+      } else if (title === '餐住预订') {
+        this.onHospitalityTap();
       }
     })
   }
@@ -151,7 +157,7 @@ export struct HomePage {
                   .fontSize(15)
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary'))
-                Text('登录可连接服务端；库存、人流和行程将在后续检查点接入')
+                Text('门票、导览、行程、项目排队与餐住服务均已接入真实 API')
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
               }

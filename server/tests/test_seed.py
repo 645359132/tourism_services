@@ -11,6 +11,16 @@ from app.db.models.guide import (
     RouteEdge,
     RouteNode,
 )
+from app.db.models.marketplace import (
+    BundleComponent,
+    Experience,
+    ExperienceSession,
+    HospitalityOffer,
+    HospitalityVenue,
+    InventoryBucket,
+    QueueCounter,
+    UserScheduleLock,
+)
 from app.db.models.role import Role
 from app.db.models.seed_record import SeedRecord
 from app.db.models.ticketing import (
@@ -52,11 +62,27 @@ async def test_foundation_seed_is_idempotent() -> None:
         route_node_count = await session.scalar(select(func.count()).select_from(RouteNode))
         route_edge_count = await session.scalar(select(func.count()).select_from(RouteEdge))
         crowd_count = await session.scalar(select(func.count()).select_from(CrowdSnapshot))
+        experience_count = await session.scalar(select(func.count()).select_from(Experience))
+        experience_session_count = await session.scalar(
+            select(func.count()).select_from(ExperienceSession)
+        )
+        venue_count = await session.scalar(select(func.count()).select_from(HospitalityVenue))
+        offer_count = await session.scalar(select(func.count()).select_from(HospitalityOffer))
+        bundle_component_count = await session.scalar(
+            select(func.count()).select_from(BundleComponent)
+        )
+        shared_bucket_count = await session.scalar(
+            select(func.count()).select_from(InventoryBucket)
+        )
+        queue_counter_count = await session.scalar(select(func.count()).select_from(QueueCounter))
+        schedule_lock_count = await session.scalar(
+            select(func.count()).select_from(UserScheduleLock)
+        )
         second_hash = await session.scalar(
             select(User.password_hash).where(User.username == "admin_demo")
         )
 
-    assert seed_count == 4
+    assert seed_count == 5
     assert role_count == 4
     assert user_count == 4
     assert ticket_type_count == 4
@@ -68,6 +94,14 @@ async def test_foundation_seed_is_idempotent() -> None:
     assert route_node_count == 12
     assert route_edge_count == 15
     assert crowd_count == 8
+    assert experience_count == 3
+    assert experience_session_count == 63
+    assert venue_count == 3
+    assert offer_count == 4
+    assert bundle_component_count == 2
+    assert shared_bucket_count == 121
+    assert queue_counter_count == 3
+    assert schedule_lock_count == 4
     assert first_hash == second_hash
     assert first_hash != DEMO_PASSWORD
     await engine.dispose()

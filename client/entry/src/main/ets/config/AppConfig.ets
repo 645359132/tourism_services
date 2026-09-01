@@ -18,6 +18,13 @@ export class AppConfig {
     return `ws://${baseUrl.substring(7)}/guide/ws/crowd`;
   }
 
+  static getQueueWebSocketUrl(queueId: string, ticket: string): string {
+    const baseUrl: string = AppConfig.apiBaseUrl;
+    const socketBase: string = baseUrl.startsWith('https://') ? `wss://${baseUrl.substring(8)}` :
+      `ws://${baseUrl.substring(7)}`;
+    return `${socketBase}/ws/queues/${encodeURIComponent(queueId)}?ticket=${encodeURIComponent(ticket)}`;
+  }
+
   static setApiBaseUrl(value: string): boolean {
     let normalized: string = value.trim();
     if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {

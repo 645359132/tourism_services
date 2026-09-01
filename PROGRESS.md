@@ -9,8 +9,8 @@
 | 3. 认证权限与客户端应用壳 | 已完成 | JWT/RBAC/refresh 重放防护；真实登录 smoke；server pytest 29 passed/83%；客户端业务测试 5 passed；debug HAP 构建通过 |
 | 4. 门票交易纵向切片 | 已完成 | 原子库存/动态价/幂等订单/支付/QRCode/核验/退款/改签；server pytest 43 passed/71%；客户端 9 tests passed；真实 REST 与 HAP 通过 |
 | 5. 导览、人流与行程智能 | 已完成 | 规则行程/示意路线/模拟人流/冲突与安全重排；真实 WS 单调推送；server pytest 50 passed/67%；客户端 14 tests 与 HAP 通过 |
-| 6. 项目排队与餐住预约 | 进行中 | 正在实现统一预约库存、虚拟排队与餐住组合闭环 |
-| 7. 商城、客服、协作与无障碍 | 待开始 |  |
+| 6. 项目排队与餐住预约 | 已完成 | 原子预约/跨夜/组合、虚拟队列/FastPass、一次性 WS ticket；server pytest 60 passed/68%；客户端 22 tests、真实 REST/WS 与 HAP 通过 |
+| 7. 商城、客服、协作与无障碍 | 进行中 | 正在实现商城积分、反馈客服、多人同行和适老无障碍 |
 | 8. 离线应急与数字护照 | 待开始 |  |
 | 9. 综合质量与容量基线 | 待开始 | Docker CLI/Compose 可用，但本次盘点时 daemon 未运行 |
 | 10. 文档与最终验收 | 待开始 |  |

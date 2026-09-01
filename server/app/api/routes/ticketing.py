@@ -158,6 +158,7 @@ async def refund_order(
 async def reschedule_order(
     order_id: UUID,
     payload: RescheduleOrderRequest,
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TicketOrderResponse:
@@ -167,6 +168,7 @@ async def reschedule_order(
         user=current_user,
         target_slot_id=payload.target_slot_id,
         idempotency_key=payload.idempotency_key,
+        walking_buffer_minutes=request.app.state.settings.reservation_walking_buffer_minutes,
     )
     return order_response(order)
 

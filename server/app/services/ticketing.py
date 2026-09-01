@@ -47,6 +47,10 @@ from app.schemas.ticketing import (
     TicketSummary,
     TicketTypeItem,
 )
+from app.services.reservations import (
+    acquire_user_schedule_lock,
+    check_marketplace_schedule_conflict,
+)
 
 SCENIC_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -74,6 +78,17 @@ def _slot_start_utc(slot: TicketSlot) -> datetime:
         slot.start_time,
         tzinfo=SCENIC_TIMEZONE,
     ).astimezone(UTC)
+
+
+def _slot_end_utc(slot: TicketSlot) -> datetime:
+    end = datetime.combine(
+        slot.visit_date,
+        slot.end_time,
+        tzinfo=SCENIC_TIMEZONE,
+    ).astimezone(UTC)
+    if slot.end_time <= slot.start_time:
+        end += timedelta(days=1)
+    return end
 
 
 def _order_statement():
@@ -342,6 +357,7 @@ async def create_ticket_order(
 ) -> TicketOrder:
     actor_id = user.id
     await expire_pending_orders(session)
+    await session.commit()
     request_hash = _hash_payload({"quantity": quantity, "slot_id": str(slot_id)})
     existing = await session.scalar(
         select(TicketOrder).where(
@@ -361,6 +377,29 @@ async def create_ticket_order(
     if slot.visit_date < _scenic_today():
         raise _error(409, "SLOT_CLOSED", "Ticket slot is no longer available")
     unit_price, _ = await calculate_unit_price(session, slot)
+    await acquire_user_schedule_lock(session, actor_id)
+    existing = await session.scalar(
+        select(TicketOrder).where(
+            TicketOrder.user_id == actor_id,
+            TicketOrder.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.request_hash != request_hash:
+            await session.rollback()
+            raise _error(409, "IDEMPOTENCY_CONFLICT", "Idempotency key payload differs")
+        order_id = existing.id
+        await session.rollback()
+        loaded = await _load_order(session, order_id)
+        assert loaded is not None
+        return loaded
+    await check_marketplace_schedule_conflict(
+        session,
+        user_id=actor_id,
+        starts_at=_slot_start_utc(slot),
+        ends_at=_slot_end_utc(slot),
+        buffer_minutes=settings.reservation_walking_buffer_minutes,
+    )
     reserved = await session.execute(
         update(TicketInventory)
         .execution_options(synchronize_session=False)
@@ -688,6 +727,7 @@ async def reschedule_ticket_order(
     user: User,
     target_slot_id: UUID,
     idempotency_key: str,
+    walking_buffer_minutes: int = 10,
 ) -> TicketOrder:
     actor_id = user.id
     actor_is_admin = _is_admin(user)
@@ -704,7 +744,41 @@ async def reschedule_ticket_order(
         order = await _owned_order(session, order_id=existing.order_id, user=user)
         return order
 
-    order = await _owned_order(session, order_id=order_id, user=user)
+    owned_before_lock = await _owned_order_by_identity(
+        session,
+        order_id=order_id,
+        user_id=actor_id,
+        admin=actor_is_admin,
+    )
+    if owned_before_lock.user_id != actor_id:
+        raise _error(403, "FORBIDDEN", "Cross-owner rescheduling is not permitted")
+    await acquire_user_schedule_lock(session, actor_id)
+    existing = await session.scalar(
+        select(RescheduleRequest).where(
+            RescheduleRequest.user_id == actor_id,
+            RescheduleRequest.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.request_hash != request_hash:
+            await session.rollback()
+            raise _error(409, "IDEMPOTENCY_CONFLICT", "Reschedule key payload differs")
+        replay_order_id = existing.order_id
+        await session.rollback()
+        replayed = await _owned_order_by_identity(
+            session,
+            order_id=replay_order_id,
+            user_id=actor_id,
+            admin=actor_is_admin,
+        )
+        return replayed
+
+    order = await _owned_order_by_identity(
+        session,
+        order_id=order_id,
+        user_id=actor_id,
+        admin=actor_is_admin,
+    )
     if order.status != ORDER_PAID:
         raise _error(409, "ORDER_NOT_RESCHEDULABLE", "Only paid orders can be rescheduled")
     item = order.items[0]
@@ -715,6 +789,13 @@ async def reschedule_ticket_order(
         raise _error(409, "TICKET_TYPE_MISMATCH", "Target slot ticket type differs")
     if target.visit_date < _scenic_today():
         raise _error(409, "SLOT_CLOSED", "Target slot is no longer available")
+    await check_marketplace_schedule_conflict(
+        session,
+        user_id=order.user_id,
+        starts_at=_slot_start_utc(target),
+        ends_at=_slot_end_utc(target),
+        buffer_minutes=walking_buffer_minutes,
+    )
     target_unit_price, _ = await calculate_unit_price(session, target)
     if target_unit_price != item.unit_price_cents:
         raise _error(

@@ -11,6 +11,7 @@ import {
 import { ApiErrorCode, ApiErrorInfo } from '../network/ApiError';
 import { NetworkResult } from '../network/HttpClient';
 import { ItineraryService } from '../network/services/ItineraryService';
+import { AppStore } from '../stores/AppStore';
 import {
   GuideRuleResult,
   ReplanAssessment,
@@ -39,6 +40,10 @@ export struct TripPage {
   @State operationMessage: string = '';
   @State requireLogin: boolean = false;
   private service: ItineraryService = new ItineraryService();
+
+  private syncCurrentItinerary(value: Itinerary): void {
+    AppStore.getInstance().setCurrentItinerary(value.id, value.revision);
+  }
 
   private stateForError(error: ApiErrorInfo | null): ContentState {
     if (error !== null && error.code === ApiErrorCode.OFFLINE) {
@@ -116,6 +121,7 @@ export struct TripPage {
       return;
     }
     this.itinerary = result.data;
+    this.syncCurrentItinerary(result.data);
     this.conflictResult = null;
     this.contentState = result.data.items.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
     this.requireLogin = false;
@@ -131,6 +137,7 @@ export struct TripPage {
     this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.itinerary = result.data;
+      this.syncCurrentItinerary(result.data);
       this.contentState = result.data.items.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
       this.operationMessage = `已刷新到 revision ${result.data.revision}`;
     } else {
@@ -178,6 +185,7 @@ export struct TripPage {
       return;
     }
     this.itinerary = result.data;
+    this.syncCurrentItinerary(result.data);
     this.conflictResult = null;
     this.contentState = result.data.items.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
     this.operationMessage = assessment.message;

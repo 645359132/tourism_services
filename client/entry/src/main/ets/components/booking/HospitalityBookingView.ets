@@ -1,0 +1,476 @@
+import { StatePanel } from '../StatePanel';
+import { ContentState } from '../../models/AppModels';
+import {
+  AvailabilityBucket,
+  AvailabilityResponse,
+  BundleComponent,
+  HospitalityOffer,
+  HospitalityOfferListResponse,
+  OfferKind,
+  Reservation,
+  ReservationKind,
+  ReservationListResponse,
+  ReservationStatus,
+  ReviewResponse,
+  Venue,
+  VenueKind,
+  VenueListResponse
+} from '../../models/BookingModels';
+import { ApiErrorCode, ApiErrorInfo } from '../../network/ApiError';
+import { NetworkResult } from '../../network/HttpClient';
+import { BookingService } from '../../network/services/BookingService';
+import {
+  BookingRuleResult,
+  shanghaiDateAfterDays,
+  validateBookingDate,
+  validateReview,
+  validateStayBooking,
+  validateTimedBooking
+} from '../../utils/BookingRules';
+import { PendingIdempotentOperation, formatMoney } from '../../utils/TicketRules';
+
+@Component
+export struct HospitalityBookingView {
+  @Prop loggedIn: boolean = false;
+  onLoginTap: () => void = (): void => {};
+  @State contentState: ContentState = ContentState.LOADING;
+  @State selectedKind: OfferKind = OfferKind.ROOM;
+  @State venues: Venue[] = [];
+  @State offers: HospitalityOffer[] = [];
+  @State selectedOfferId: string = '';
+  @State availability: AvailabilityBucket[] = [];
+  @State dateFrom: string = shanghaiDateAfterDays(1);
+  @State dateTo: string = shanghaiDateAfterDays(2);
+  @State startsAt: string = '';
+  @State quantity: number = 1;
+  @State partySize: number = 2;
+  @State reservations: Reservation[] = [];
+  @State operationMessage: string = '';
+  @State operationBusy: boolean = false;
+  @State inventoryNotice: string = '';
+  @State reviewReservationId: string = '';
+  @State reviewRating: number = 5;
+  @State reviewContent: string = '服务体验很好';
+  @State cancelReason: string = '游客行程调整';
+  private service: BookingService = new BookingService();
+  private bookingPending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  private confirmPending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  private cancelPending: PendingIdempotentOperation = new PendingIdempotentOperation();
+
+  aboutToAppear(): void {
+    this.loadCatalog();
+    if (this.loggedIn) {
+      this.loadReservations();
+    }
+  }
+
+  private stateForError(error: ApiErrorInfo | null): ContentState {
+    if (error !== null && error.code === ApiErrorCode.OFFLINE) {
+      return ContentState.OFFLINE;
+    }
+    if (error !== null && (error.code === ApiErrorCode.UNAUTHORIZED || error.code === ApiErrorCode.FORBIDDEN)) {
+      return ContentState.NO_PERMISSION;
+    }
+    return ContentState.ERROR;
+  }
+
+  private errorText(error: ApiErrorInfo | null): string {
+    return error === null ? '餐住服务请求失败，请稍后重试' : error.userMessage;
+  }
+
+  private resolveFailure(pending: PendingIdempotentOperation, error: ApiErrorInfo | null): void {
+    if (error !== null) {
+      pending.resolveFailure(error.statusCode, error.retriable);
+    }
+  }
+
+  private filteredOffers(): HospitalityOffer[] {
+    return this.offers.filter((value: HospitalityOffer) => value.kind === this.selectedKind);
+  }
+
+  private selectedOffer(): HospitalityOffer | null {
+    for (let index: number = 0; index < this.offers.length; index++) {
+      if (this.offers[index].id === this.selectedOfferId) {
+        return this.offers[index];
+      }
+    }
+    return null;
+  }
+
+  private venueFor(venueId: string): Venue | null {
+    for (let index: number = 0; index < this.venues.length; index++) {
+      if (this.venues[index].id === venueId) {
+        return this.venues[index];
+      }
+    }
+    return null;
+  }
+
+  private async loadCatalog(): Promise<void> {
+    this.contentState = ContentState.LOADING;
+    const venueResult: NetworkResult<VenueListResponse> = await this.service.listVenues();
+    if (!venueResult.successful || venueResult.data === null) {
+      this.contentState = this.stateForError(venueResult.error);
+      this.operationMessage = this.errorText(venueResult.error);
+      return;
+    }
+    this.venues = venueResult.data.items;
+    const offerResult: NetworkResult<HospitalityOfferListResponse> = await this.service.listOffers();
+    if (!offerResult.successful || offerResult.data === null) {
+      this.contentState = this.stateForError(offerResult.error);
+      this.operationMessage = this.errorText(offerResult.error);
+      return;
+    }
+    this.offers = offerResult.data.items;
+    const visible: HospitalityOffer[] = this.filteredOffers();
+    if (visible.length > 0) {
+      this.selectedOfferId = visible[0].id;
+    }
+    this.contentState = visible.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
+  }
+
+  private async loadReservations(): Promise<void> {
+    const result: NetworkResult<ReservationListResponse> = await this.service.listReservations();
+    if (result.successful && result.data !== null) {
+      this.reservations = result.data.items;
+    }
+  }
+
+  private switchKind(value: OfferKind): void {
+    this.selectedKind = value;
+    const visible: HospitalityOffer[] = this.offers.filter((item: HospitalityOffer) => item.kind === value);
+    this.selectedOfferId = visible.length > 0 ? visible[0].id : '';
+    this.availability = [];
+    this.inventoryNotice = '';
+    this.contentState = visible.length > 0 ? ContentState.CONTENT : ContentState.EMPTY;
+  }
+
+  private async checkAvailability(): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    const offer: HospitalityOffer | null = this.selectedOffer();
+    if (offer === null) {
+      this.operationMessage = '请先选择餐住产品';
+      return;
+    }
+    if (!validateBookingDate(this.dateFrom).valid || !validateBookingDate(this.dateTo).valid ||
+      this.dateFrom > this.dateTo) {
+      this.operationMessage = '请使用 YYYY-MM-DD，并确保查询结束日期不早于开始日期';
+      return;
+    }
+    this.operationBusy = true;
+    const previous: AvailabilityBucket[] = this.availability.slice();
+    const result: NetworkResult<AvailabilityResponse> = await this.service.getAvailability(
+      offer.id, this.dateFrom, this.dateTo);
+    this.operationBusy = false;
+    if (!result.successful || result.data === null) {
+      this.contentState = this.stateForError(result.error);
+      this.operationMessage = this.errorText(result.error);
+      return;
+    }
+    this.availability = result.data.items;
+    if (previous.length > 0 && this.availability.length > 0 &&
+      previous[0].remaining !== this.availability[0].remaining) {
+      this.inventoryNotice = `库存已从 ${previous[0].remaining} 更新为 ${this.availability[0].remaining}`;
+    }
+    if (this.availability.length > 0) {
+      this.startsAt = this.availability[0].start_at;
+    }
+    this.contentState = this.availability.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
+    this.operationMessage = this.availability.length === 0 ? '当前日期范围无可用库存' : '已读取真实库存';
+  }
+
+  private replaceReservation(value: Reservation): void {
+    const updated: Reservation[] = this.reservations.slice();
+    let replaced: boolean = false;
+    for (let index: number = 0; index < updated.length; index++) {
+      if (updated[index].id === value.id) {
+        updated[index] = value;
+        replaced = true;
+      }
+    }
+    if (!replaced) {
+      updated.unshift(value);
+    }
+    this.reservations = updated;
+  }
+
+  private async bookSelected(): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    if (!this.loggedIn) {
+      this.contentState = ContentState.NO_PERMISSION;
+      this.operationMessage = '登录后才能提交真实餐住预约';
+      return;
+    }
+    const offer: HospitalityOffer | null = this.selectedOffer();
+    if (offer === null) {
+      this.operationMessage = '请先选择餐住产品';
+      return;
+    }
+    if (this.partySize > offer.max_party_size) {
+      this.operationMessage = `该产品最多接待 ${offer.max_party_size} 人`;
+      return;
+    }
+    let validation: BookingRuleResult = new BookingRuleResult(true, '');
+    if (this.selectedKind === OfferKind.ROOM) {
+      validation = validateStayBooking(this.dateFrom, this.dateTo, this.quantity, this.partySize);
+    } else if (this.selectedKind === OfferKind.MEAL) {
+      validation = validateTimedBooking(this.startsAt, this.partySize);
+    } else {
+      validation = validateTimedBooking(`${this.dateFrom}T09:00`, this.partySize);
+    }
+    if (!validation.valid) {
+      this.operationMessage = validation.message;
+      return;
+    }
+    const operationId: string = `${offer.id}:${this.dateFrom}:${this.dateTo}:${this.startsAt}:` +
+      `${this.quantity}:${this.partySize}`;
+    const key: string = this.bookingPending.getOrCreate(operationId, 'hospitality-booking');
+    this.operationBusy = true;
+    let result: NetworkResult<Reservation>;
+    if (this.selectedKind === OfferKind.ROOM) {
+      result = await this.service.bookStay(offer.id, this.dateFrom, this.dateTo,
+        this.quantity, this.partySize, key);
+    } else if (this.selectedKind === OfferKind.MEAL) {
+      result = await this.service.bookDining(offer.id, this.startsAt, this.partySize, key);
+    } else {
+      result = await this.service.bookBundle(offer.id, this.dateFrom, this.partySize, key);
+    }
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      this.bookingPending.resolveSuccess();
+      this.replaceReservation(result.data);
+      this.operationMessage = `预约 ${result.data.booking_no} 已创建；provider=${result.data.provider}/demo=${result.data.is_demo}`;
+      await this.checkAvailability();
+    } else {
+      this.resolveFailure(this.bookingPending, result.error);
+      this.operationMessage = this.errorText(result.error);
+      await this.checkAvailability();
+    }
+  }
+
+  private async confirm(value: Reservation): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    this.operationBusy = true;
+    const key: string = this.confirmPending.getOrCreate(value.id, 'hospitality-confirm');
+    const result: NetworkResult<Reservation> = await this.service.confirmReservation(value.id, key);
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      this.confirmPending.resolveSuccess(); this.replaceReservation(result.data);
+      this.operationMessage = '餐住预约已确认；未发生真实支付';
+    } else { this.resolveFailure(this.confirmPending, result.error); this.operationMessage = this.errorText(result.error); }
+  }
+
+  private async cancel(value: Reservation): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    if (this.cancelReason.trim().length === 0) {
+      this.operationMessage = '请填写取消原因';
+      return;
+    }
+    this.operationBusy = true;
+    const operationId: string = `${value.id}:${this.cancelReason.trim()}`;
+    const key: string = this.cancelPending.getOrCreate(operationId, 'hospitality-cancel');
+    const result: NetworkResult<Reservation> = await this.service.cancelReservation(
+      value.id, this.cancelReason.trim(), key);
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      this.cancelPending.resolveSuccess(); this.replaceReservation(result.data); this.operationMessage = '餐住预约已取消';
+    } else { this.resolveFailure(this.cancelPending, result.error); this.operationMessage = this.errorText(result.error); }
+  }
+
+  private async submitReview(value: Reservation): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    const validation: BookingRuleResult = validateReview(this.reviewRating, this.reviewContent);
+    if (!validation.valid) { this.operationMessage = validation.message; return; }
+    this.operationBusy = true;
+    const result: NetworkResult<ReviewResponse> = await this.service.createReview(
+      value.id, this.reviewRating, this.reviewContent.trim());
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      this.reviewReservationId = ''; this.operationMessage = `评价已提交，状态 ${result.data.status}`;
+    } else { this.operationMessage = this.errorText(result.error); }
+  }
+
+  @Builder
+  private kindButton(label: string, value: OfferKind) {
+    Button(label).layoutWeight(1).fontSize(12)
+      .fontColor(this.selectedKind === value ? Color.White : $r('app.color.primary'))
+      .backgroundColor(this.selectedKind === value ? $r('app.color.primary') : $r('app.color.surface_tint'))
+      .onClick(() => { this.switchKind(value); })
+  }
+
+  @Builder
+  private offerCard(value: HospitalityOffer) {
+    Column({ space: 5 }) {
+      Text(value.name).width('100%').fontWeight(FontWeight.Bold)
+        .fontColor(this.selectedOfferId === value.id ? Color.White : $r('app.color.text_primary'))
+      Text(value.description).width('100%').fontSize(11).maxLines(2)
+        .fontColor(this.selectedOfferId === value.id ? '#E8F2FF' : $r('app.color.text_secondary'))
+      Text(`${formatMoney(value.base_price_cents)} · 容量 ${value.capacity}`).fontSize(12)
+        .fontColor(this.selectedOfferId === value.id ? Color.White : $r('app.color.error'))
+      Text(`最多 ${value.max_party_size} 人 · provider=${value.provider}/demo=${value.is_demo}`).width('100%')
+        .fontSize(9).fontColor(this.selectedOfferId === value.id ? '#E8F2FF' : $r('app.color.warning'))
+      Text(`设施/属性：${value.attributes.join('、')}`).width('100%').fontSize(10).maxLines(1)
+        .fontColor(this.selectedOfferId === value.id ? '#E8F2FF' : $r('app.color.text_secondary'))
+    }.width('48%').height(146).padding(13).borderRadius(16)
+      .backgroundColor(this.selectedOfferId === value.id ? $r('app.color.primary') : $r('app.color.surface'))
+      .onClick(() => { this.selectedOfferId = value.id; this.availability = []; })
+  }
+
+  build() {
+    Scroll() {
+      Column({ space: 14 }) {
+        Text('餐住真实预约').width('100%').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.text_primary'))
+        Text('酒店/民宿/餐厅目录与库存来自 API；provider=demo，不代表真实商家、支付或履约已接入。')
+          .width('100%').fontSize(11).fontColor($r('app.color.warning'))
+
+        Row({ space: 7 }) {
+          this.kindButton('酒店/民宿房型', OfferKind.ROOM)
+          this.kindButton('餐厅/套餐时段', OfferKind.MEAL)
+          this.kindButton('住玩/餐玩组合', OfferKind.BUNDLE)
+        }.width('100%')
+
+        Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
+          ForEach(this.filteredOffers(), (value: HospitalityOffer) => { this.offerCard(value) },
+            (value: HospitalityOffer) => value.id)
+        }.width('100%')
+
+        if (this.selectedOffer() !== null && this.venueFor(this.selectedOffer()?.venue_id ?? '') !== null) {
+          Text(`${this.venueFor(this.selectedOffer()?.venue_id ?? '')?.kind} · ` +
+            `${this.venueFor(this.selectedOffer()?.venue_id ?? '')?.name} · ` +
+            `评分 ${this.venueFor(this.selectedOffer()?.venue_id ?? '')?.rating} · ` +
+            `设施 ${this.venueFor(this.selectedOffer()?.venue_id ?? '')?.amenities.join('、')}`)
+            .width('100%').padding(10).fontSize(11).fontColor($r('app.color.primary'))
+            .backgroundColor($r('app.color.surface_tint')).borderRadius(10)
+          Text(`${this.venueFor(this.selectedOffer()?.venue_id ?? '')?.description} · 无障碍：` +
+            `${this.venueFor(this.selectedOffer()?.venue_id ?? '')?.accessibility.join('、')}`)
+            .width('100%').fontSize(10).fontColor($r('app.color.text_secondary'))
+        }
+
+        if (this.selectedKind === OfferKind.BUNDLE && this.selectedOffer() !== null) {
+          Column({ space: 5 }) {
+            Text('组合包含').width('100%').fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            ForEach(this.selectedOffer()?.bundle_components ?? [], (component: BundleComponent) => {
+              Text(`${component.name} × ${component.quantity} · 第 ${component.offset_minutes} 分钟开始`)
+                .width('100%').fontSize(11).fontColor($r('app.color.primary'))
+            }, (component: BundleComponent) => `${component.kind}:${component.ref_id}:${component.offset_minutes}`)
+          }.width('100%').padding(11).borderRadius(12).backgroundColor($r('app.color.surface_tint'))
+        }
+
+        Row({ space: 8 }) {
+          TextInput({ text: this.dateFrom, placeholder: this.selectedKind === OfferKind.ROOM ? '入住日期' : '游玩日期' })
+            .layoutWeight(1).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
+            .onChange((value: string) => { this.dateFrom = value; })
+          TextInput({ text: this.dateTo, placeholder: '离店/查询结束日期' }).layoutWeight(1)
+            .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
+            .onChange((value: string) => { this.dateTo = value; })
+          Button('查库存').fontColor(Color.White).backgroundColor($r('app.color.primary'))
+            .onClick(() => { this.checkAvailability(); })
+        }.width('100%')
+
+        if (this.contentState !== ContentState.CONTENT) {
+          StatePanel({ state: this.contentState, message: this.operationMessage,
+            onRetry: (): void => { this.loadCatalog(); } })
+          if (this.contentState === ContentState.NO_PERMISSION) {
+            Button(this.loggedIn ? '继续' : '登录后继续').fontColor(Color.White)
+              .backgroundColor($r('app.color.primary')).onClick(() => {
+                if (this.loggedIn) { this.contentState = ContentState.CONTENT; } else { this.onLoginTap(); }
+              })
+          }
+        }
+
+        if (this.inventoryNotice.length > 0) {
+          Text(this.inventoryNotice).width('100%').padding(10).fontSize(11).fontColor($r('app.color.warning'))
+        }
+        ForEach(this.availability, (bucket: AvailabilityBucket) => {
+          Row() {
+            Column({ space: 3 }) {
+              Text(`${bucket.start_at} - ${bucket.end_at}`).fontColor($r('app.color.text_primary'))
+              Text(`余量 ${bucket.remaining} · ${formatMoney(bucket.unit_price_cents)}`).fontSize(11)
+                .fontColor(bucket.remaining > 0 ? $r('app.color.success') : $r('app.color.error'))
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Button('选此时段').fontSize(11).onClick(() => { this.startsAt = bucket.start_at; })
+          }.width('100%').padding(12).borderRadius(13).backgroundColor($r('app.color.surface'))
+        }, (bucket: AvailabilityBucket) => bucket.bucket_id)
+
+        Row({ space: 8 }) {
+          Text(`数量 ${this.quantity}`).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          Button('−').onClick(() => { this.quantity = Math.max(1, this.quantity - 1); })
+          Button('+').onClick(() => { this.quantity = Math.min(4, this.quantity + 1); })
+          Text(`同行 ${this.partySize}`).fontColor($r('app.color.text_primary'))
+          Button('−').onClick(() => { this.partySize = Math.max(1, this.partySize - 1); })
+          Button('+').onClick(() => { this.partySize = Math.min(12, this.partySize + 1); })
+        }.width('100%')
+        if (this.selectedKind === OfferKind.MEAL) {
+          TextInput({ text: this.startsAt, placeholder: '餐饮时段 ISO 时间' }).width('100%')
+            .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
+            .onChange((value: string) => { this.startsAt = value; })
+        }
+        Button(this.operationBusy ? '处理中…' : '提交 API 预约').enabled(!this.operationBusy).width('100%')
+          .fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => { this.bookSelected(); })
+
+        if (this.reservations.length > 0) {
+          Text('我的餐住预约').width('100%').fontSize(17).fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.text_primary'))
+          TextInput({ text: this.cancelReason, placeholder: '取消预约原因' }).width('100%')
+            .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
+            .onChange((value: string) => { this.cancelReason = value; })
+          ForEach(this.reservations.filter((value: Reservation) => value.kind !== ReservationKind.EXPERIENCE),
+            (value: Reservation) => {
+              Column({ space: 6 }) {
+                Row() {
+                  Text(value.resource_name).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                    .layoutWeight(1)
+                  Text(value.status).fontSize(11).fontColor($r('app.color.warning'))
+                }.width('100%')
+                Text(`${value.starts_at} - ${value.ends_at} · ${formatMoney(value.total_cents)} · ` +
+                  `provider=${value.provider}/demo=${value.is_demo}`).fontSize(10).fontColor($r('app.color.text_secondary'))
+                if (value.status === ReservationStatus.HELD) {
+                  Row({ space: 8 }) {
+                    Button('确认').enabled(!this.operationBusy).fontSize(11).fontColor(Color.White)
+                      .backgroundColor($r('app.color.primary'))
+                      .onClick(() => { this.confirm(value); })
+                    Button('取消').enabled(!this.operationBusy).fontSize(11).fontColor($r('app.color.error'))
+                      .onClick(() => { this.cancel(value); })
+                  }.width('100%')
+                } else if (value.status === ReservationStatus.COMPLETED) {
+                  Button('评价').enabled(!this.operationBusy).fontSize(11)
+                    .onClick(() => { this.reviewReservationId = value.id; })
+                }
+                if (this.reviewReservationId === value.id) {
+                  Column({ space: 7 }) {
+                    Row({ space: 6 }) {
+                      Button('−').onClick(() => { this.reviewRating = Math.max(1, this.reviewRating - 1); })
+                      Text(`${this.reviewRating} 星`).fontColor($r('app.color.primary'))
+                      Button('+').onClick(() => { this.reviewRating = Math.min(5, this.reviewRating + 1); })
+                    }.width('100%')
+                    TextInput({ text: this.reviewContent, placeholder: '评价内容（3-500 字）' }).width('100%')
+                      .onChange((text: string) => { this.reviewContent = text; })
+                    Row({ space: 8 }) {
+                      Button(this.operationBusy ? '提交中…' : '提交评价').enabled(!this.operationBusy)
+                        .onClick(() => { this.submitReview(value); })
+                      Button('收起').onClick(() => { this.reviewReservationId = ''; })
+                    }.width('100%')
+                  }.width('100%')
+                }
+              }.width('100%').padding(13).borderRadius(14).backgroundColor($r('app.color.surface'))
+            }, (value: Reservation) => value.id)
+        }
+        if (this.operationMessage.length > 0) {
+          Text(this.operationMessage).width('100%').padding(10).fontSize(11).fontColor($r('app.color.warning'))
+            .backgroundColor($r('app.color.surface_tint')).borderRadius(10)
+        }
+      }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 30 })
+    }.width('100%').height('100%').scrollBar(BarState.Off)
+  }
+}

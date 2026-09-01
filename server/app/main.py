@@ -16,16 +16,20 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.db.session import dispose_database, get_session_factory
 from app.realtime.crowd import ConnectionHub, CrowdPublisher
+from app.realtime.queues import QueueConnectionHub, QueuePublisher, QueueTicketStore
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    publisher: CrowdPublisher = application.state.crowd_publisher
-    publisher.start()
+    crowd_publisher: CrowdPublisher = application.state.crowd_publisher
+    queue_publisher: QueuePublisher = application.state.queue_publisher
+    crowd_publisher.start()
+    queue_publisher.start()
     try:
         yield
     finally:
-        await publisher.stop()
+        await queue_publisher.stop()
+        await crowd_publisher.stop()
         await dispose_database()
 
 
@@ -50,6 +54,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hub=application.state.crowd_hub,
         session_factory_provider=get_session_factory,
         interval_seconds=resolved_settings.crowd_publish_interval_seconds,
+    )
+    application.state.queue_hub = QueueConnectionHub()
+    application.state.queue_tickets = QueueTicketStore(
+        ttl_seconds=resolved_settings.ws_ticket_ttl_seconds,
+    )
+    application.state.queue_publisher = QueuePublisher(
+        hub=application.state.queue_hub,
+        session_factory_provider=get_session_factory,
+        interval_seconds=resolved_settings.queue_publish_interval_seconds,
     )
 
     register_exception_handlers(application)
@@ -77,6 +90,7 @@ def run() -> None:
         host="0.0.0.0",
         port=8000,
         reload=settings.debug and settings.app_env == "development",
+        log_config=None,
     )
 
 

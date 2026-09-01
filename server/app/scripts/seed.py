@@ -7,7 +7,7 @@ Run after ``alembic upgrade head`` with ``uv run tourism-seed`` or
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -21,6 +21,16 @@ from app.db.models.guide import (
     Narration,
     RouteEdge,
     RouteNode,
+)
+from app.db.models.marketplace import (
+    BundleComponent,
+    Experience,
+    ExperienceSession,
+    HospitalityOffer,
+    HospitalityVenue,
+    InventoryBucket,
+    QueueCounter,
+    UserScheduleLock,
 )
 from app.db.models.preference import TouristPreference
 from app.db.models.role import Role, UserRole
@@ -38,6 +48,7 @@ FOUNDATION_SEED_KEY = "foundation-v1"
 AUTH_DEMO_SEED_KEY = "auth-demo-v1"
 TICKETING_SEED_KEY = "ticketing-demo-v1"
 GUIDE_SEED_KEY = "guide-demo-v1"
+MARKETPLACE_SEED_KEY = "marketplace-demo-v1"
 DEMO_PASSWORD = "Tourism123!"
 ROLE_DESCRIPTIONS = {
     "tourist": "Visitor using tourism discovery and personalization features",
@@ -335,6 +346,405 @@ async def _seed_guide_data(session: AsyncSession) -> None:
             )
 
 
+def _scenic_utc(day, clock: time) -> datetime:
+    return datetime.combine(day, clock, tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(UTC)
+
+
+async def _seed_marketplace_data(session: AsyncSession) -> None:
+    nodes = {
+        node.code: node
+        for node in await session.scalars(
+            select(RouteNode).where(
+                RouteNode.code.in_(
+                    (
+                        "node_tower",
+                        "node_craft",
+                        "node_lake",
+                        "node_tea",
+                        "node_garden",
+                    )
+                )
+            )
+        )
+    }
+    experience_specs = (
+        (
+            "sky_coaster",
+            "RIDE",
+            "凌云飞车",
+            "山地观景轨道体验; 排队与 FastPass 均为本地演示",
+            "node_tower",
+            12,
+            120,
+            True,
+            3_800,
+            ["wheelchair-transfer"],
+            35,
+            16,
+        ),
+        (
+            "heritage_show",
+            "SHOW",
+            "非遗光影秀",
+            "定时文化演出, 使用真实服务端场次库存",
+            "node_craft",
+            45,
+            0,
+            False,
+            0,
+            ["wheelchair", "stroller"],
+            20,
+            60,
+        ),
+        (
+            "lake_boat",
+            "RIDE",
+            "镜湖游船",
+            "亲子游船体验; 实时队列由模拟发布器驱动",
+            "node_lake",
+            25,
+            0,
+            True,
+            2_600,
+            ["wheelchair", "stroller"],
+            25,
+            24,
+        ),
+    )
+    experiences: dict[str, Experience] = {}
+    experience_capacity: dict[str, int] = {}
+    for (
+        code,
+        kind,
+        name,
+        description,
+        node_code,
+        duration_minutes,
+        min_height_cm,
+        fastpass_allowed,
+        fastpass_price_cents,
+        accessibility,
+        wait_minutes,
+        capacity,
+    ) in experience_specs:
+        experience = await session.scalar(select(Experience).where(Experience.code == code))
+        if experience is None:
+            experience = Experience(
+                code=code,
+                kind=kind,
+                name=name,
+                description=description,
+                node_id=nodes[node_code].id,
+                duration_minutes=duration_minutes,
+                min_height_cm=min_height_cm,
+                fastpass_allowed=fastpass_allowed,
+                fastpass_price_cents=fastpass_price_cents,
+                accessibility=accessibility,
+                wait_minutes=wait_minutes,
+                is_active=True,
+            )
+            session.add(experience)
+            await session.flush()
+        experiences[code] = experience
+        experience_capacity[code] = capacity
+        if await session.get(QueueCounter, experience.id) is None:
+            session.add(QueueCounter(experience_id=experience.id, next_sequence=1))
+
+    scenic_today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    first_visit_date = scenic_today + timedelta(days=1)
+    session_windows = (time(10, 0), time(14, 0), time(17, 0))
+    for day_offset in range(7):
+        business_date = first_visit_date + timedelta(days=day_offset)
+        for code, experience in experiences.items():
+            capacity = experience_capacity[code]
+            for start_clock in session_windows:
+                starts_at = _scenic_utc(business_date, start_clock)
+                ends_at = starts_at + timedelta(minutes=experience.duration_minutes)
+                experience_session = await session.scalar(
+                    select(ExperienceSession).where(
+                        ExperienceSession.experience_id == experience.id,
+                        ExperienceSession.starts_at == starts_at,
+                    )
+                )
+                if experience_session is None:
+                    experience_session = ExperienceSession(
+                        experience_id=experience.id,
+                        starts_at=starts_at,
+                        ends_at=ends_at,
+                        capacity=capacity,
+                        status="OPEN",
+                    )
+                    session.add(experience_session)
+                    await session.flush()
+                bucket = await session.scalar(
+                    select(InventoryBucket).where(
+                        InventoryBucket.resource_type == "EXPERIENCE_SESSION",
+                        InventoryBucket.resource_id == experience_session.id,
+                        InventoryBucket.starts_at == starts_at,
+                    )
+                )
+                if bucket is None:
+                    session.add(
+                        InventoryBucket(
+                            resource_type="EXPERIENCE_SESSION",
+                            resource_id=experience_session.id,
+                            business_date=business_date,
+                            starts_at=starts_at,
+                            ends_at=ends_at,
+                            capacity=capacity,
+                            held=0,
+                            confirmed=0,
+                        )
+                    )
+
+    for day_offset in range(8):
+        business_date = scenic_today + timedelta(days=day_offset)
+        starts_at = _scenic_utc(business_date, time(0, 0))
+        ends_at = starts_at + timedelta(days=1)
+        for experience in experiences.values():
+            if not experience.fastpass_allowed:
+                continue
+            bucket = await session.scalar(
+                select(InventoryBucket).where(
+                    InventoryBucket.resource_type == "FAST_PASS",
+                    InventoryBucket.resource_id == experience.id,
+                    InventoryBucket.starts_at == starts_at,
+                )
+            )
+            if bucket is None:
+                session.add(
+                    InventoryBucket(
+                        resource_type="FAST_PASS",
+                        resource_id=experience.id,
+                        business_date=business_date,
+                        starts_at=starts_at,
+                        ends_at=ends_at,
+                        capacity=8,
+                        held=0,
+                        confirmed=0,
+                    )
+                )
+
+    venue_specs = (
+        (
+            "cloud_hotel",
+            "HOTEL",
+            "云栖景区酒店",
+            "景区内演示酒店; 未连接真实 PMS",
+            "游客中心东侧 200 米",
+            "node_tea",
+            ["wheelchair", "stroller"],
+            ["早餐", "行李寄存", "无障碍客房"],
+            47,
+        ),
+        (
+            "garden_homestay",
+            "HOMESTAY",
+            "百草园民宿",
+            "本地演示民宿; 房态来自共享库存桶",
+            "百草园南门",
+            "node_garden",
+            ["stroller"],
+            ["庭院", "亲子用品"],
+            45,
+        ),
+        (
+            "tea_restaurant",
+            "RESTAURANT",
+            "云水餐厅",
+            "景区套餐时段演示; 未连接真实商家系统",
+            "云水茶舍旁",
+            "node_tea",
+            ["wheelchair", "stroller"],
+            ["儿童椅", "素食选项"],
+            46,
+        ),
+    )
+    venues: dict[str, HospitalityVenue] = {}
+    for (
+        code,
+        kind,
+        name,
+        description,
+        address,
+        node_code,
+        accessibility,
+        amenities,
+        rating_tenths,
+    ) in venue_specs:
+        venue = await session.scalar(select(HospitalityVenue).where(HospitalityVenue.code == code))
+        if venue is None:
+            venue = HospitalityVenue(
+                code=code,
+                kind=kind,
+                name=name,
+                description=description,
+                address=address,
+                node_id=nodes[node_code].id,
+                accessibility=accessibility,
+                amenities=amenities,
+                rating_tenths=rating_tenths,
+                is_demo=True,
+            )
+            session.add(venue)
+            await session.flush()
+        venues[code] = venue
+
+    offer_specs = (
+        (
+            "lake_room",
+            "cloud_hotel",
+            "ROOM",
+            "湖景家庭房",
+            "一张大床与亲子沙发床",
+            68_000,
+            8,
+            4,
+        ),
+        (
+            "garden_room",
+            "garden_homestay",
+            "ROOM",
+            "庭院双人房",
+            "安静庭院房型",
+            42_000,
+            6,
+            3,
+        ),
+        (
+            "heritage_meal",
+            "tea_restaurant",
+            "MEAL",
+            "非遗风味套餐",
+            "含素食替换选项的时段套餐",
+            8_800,
+            24,
+            10,
+        ),
+        (
+            "stay_play_bundle",
+            "cloud_hotel",
+            "BUNDLE",
+            "住玩组合",
+            "一晚湖景房与凌云飞车场次组合",
+            29_800,
+            8,
+            4,
+        ),
+    )
+    offers: dict[str, HospitalityOffer] = {}
+    for (
+        code,
+        venue_code,
+        kind,
+        name,
+        description,
+        price,
+        capacity,
+        max_party_size,
+    ) in offer_specs:
+        offer = await session.scalar(select(HospitalityOffer).where(HospitalityOffer.code == code))
+        if offer is None:
+            offer = HospitalityOffer(
+                venue_id=venues[venue_code].id,
+                code=code,
+                kind=kind,
+                name=name,
+                description=description,
+                unit_price_cents=price,
+                capacity_per_bucket=capacity,
+                max_party_size=max_party_size,
+                is_active=True,
+            )
+            session.add(offer)
+            await session.flush()
+        offers[code] = offer
+
+    bundle = offers["stay_play_bundle"]
+    component_specs = (
+        ("ROOM", offers["lake_room"].id, offers["lake_room"].name, 1, 0),
+        ("EXPERIENCE", experiences["sky_coaster"].id, experiences["sky_coaster"].name, 1, 0),
+    )
+    for component_type, resource_id, name, quantity, offset_minutes in component_specs:
+        component = await session.scalar(
+            select(BundleComponent).where(
+                BundleComponent.bundle_offer_id == bundle.id,
+                BundleComponent.component_type == component_type,
+                BundleComponent.component_resource_id == resource_id,
+            )
+        )
+        if component is None:
+            session.add(
+                BundleComponent(
+                    bundle_offer_id=bundle.id,
+                    component_type=component_type,
+                    component_resource_id=resource_id,
+                    component_name=name,
+                    quantity=quantity,
+                    offset_minutes=offset_minutes,
+                )
+            )
+
+    for day_offset in range(14):
+        business_date = first_visit_date + timedelta(days=day_offset)
+        room_start = _scenic_utc(business_date, time(15, 0))
+        room_end = _scenic_utc(business_date + timedelta(days=1), time(11, 0))
+        for code in ("lake_room", "garden_room"):
+            offer = offers[code]
+            bucket = await session.scalar(
+                select(InventoryBucket).where(
+                    InventoryBucket.resource_type == "ROOM",
+                    InventoryBucket.resource_id == offer.id,
+                    InventoryBucket.starts_at == room_start,
+                )
+            )
+            if bucket is None:
+                session.add(
+                    InventoryBucket(
+                        resource_type="ROOM",
+                        resource_id=offer.id,
+                        business_date=business_date,
+                        starts_at=room_start,
+                        ends_at=room_end,
+                        capacity=offer.capacity_per_bucket,
+                        held=0,
+                        confirmed=0,
+                    )
+                )
+        if day_offset < 7:
+            meal_offer = offers["heritage_meal"]
+            for start_clock, end_clock in (
+                (time(12, 0), time(14, 0)),
+                (time(18, 0), time(20, 0)),
+            ):
+                meal_start = _scenic_utc(business_date, start_clock)
+                meal_end = _scenic_utc(business_date, end_clock)
+                bucket = await session.scalar(
+                    select(InventoryBucket).where(
+                        InventoryBucket.resource_type == "MEAL",
+                        InventoryBucket.resource_id == meal_offer.id,
+                        InventoryBucket.starts_at == meal_start,
+                    )
+                )
+                if bucket is None:
+                    session.add(
+                        InventoryBucket(
+                            resource_type="MEAL",
+                            resource_id=meal_offer.id,
+                            business_date=business_date,
+                            starts_at=meal_start,
+                            ends_at=meal_end,
+                            capacity=meal_offer.capacity_per_bucket,
+                            held=0,
+                            confirmed=0,
+                        )
+                    )
+
+    for user_id in await session.scalars(select(User.id)):
+        if await session.get(UserScheduleLock, user_id) is None:
+            session.add(UserScheduleLock(user_id=user_id, version=1))
+
+
 async def seed_database(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     *,
@@ -512,6 +922,20 @@ async def seed_database(
                 )
             )
             inserted = True
+
+        marketplace_seed = await session.get(SeedRecord, MARKETPLACE_SEED_KEY)
+        if marketplace_seed is None:
+            session.add(
+                SeedRecord(
+                    key=MARKETPLACE_SEED_KEY,
+                    description=(
+                        "Experience sessions, shared reservation inventory, queues, "
+                        "FastPass quotas, hospitality, bundles, and reviews"
+                    ),
+                )
+            )
+            inserted = True
+        await _seed_marketplace_data(session)
 
         await session.commit()
         return inserted

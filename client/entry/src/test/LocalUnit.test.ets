@@ -1,6 +1,14 @@
 import { describe, expect, it } from '@ohos/hypium';
 import { TripPlanItem } from '../main/ets/models/AppModels';
 import {
+  ExperienceSession,
+  QueueStatus,
+  Reservation,
+  ReservationAllocation,
+  ReservationStatus,
+  SessionStatus
+} from '../main/ets/models/BookingModels';
+import {
   CrowdLevel,
   Itinerary,
   ItineraryGenerateRequest,
@@ -10,6 +18,21 @@ import { TicketOrderStatus, TicketSlot } from '../main/ets/models/TicketModels';
 import { ApiErrorCode, ApiErrorInfo, mapApiError } from '../main/ets/network/ApiError';
 import { ValidationResult, validateCredentials, validatePassword, validatePhone } from '../main/ets/utils/InputValidators';
 import { findTripConflict, hasTripConflict } from '../main/ets/utils/TripConflict';
+import {
+  detectSessionInventoryChange,
+  hasReservationConflict,
+  isCurrentItinerarySuggestion,
+  isTerminalQueueStatus,
+  parseQueueEvent,
+  shanghaiDateAfterDays,
+  shouldAcceptQueueEvent,
+  shouldAcceptQueueSequence,
+  validateBookingDate,
+  validateReview,
+  validateSessionReservation,
+  validateStayBooking,
+  validateTimedBooking
+} from '../main/ets/utils/BookingRules';
 import {
   assessReplan,
   classifyCrowdLevel,
@@ -206,6 +229,93 @@ export default function tourismBusinessRulesTest() {
       expect(assessReplan(previous, updated).accepted).assertTrue();
       lockedAfter.start_at = '2026-09-02T09:10:00';
       expect(assessReplan(previous, updated).accepted).assertFalse();
+    });
+
+    it('validatesExperienceDateCapacityAndInventory', 0, () => {
+      const session: ExperienceSession = new ExperienceSession();
+      session.id = 'session-1';
+      session.status = SessionStatus.OPEN;
+      session.remaining = 4;
+      expect(validateBookingDate('2026-09-02').valid).assertTrue();
+      expect(validateBookingDate('2026-02-30').valid).assertFalse();
+      expect(validateSessionReservation(session, 3).valid).assertTrue();
+      expect(validateSessionReservation(session, 5).valid).assertFalse();
+      const updated: ExperienceSession = new ExperienceSession();
+      updated.id = 'session-1';
+      updated.status = SessionStatus.OPEN;
+      updated.remaining = 0;
+      expect(detectSessionInventoryChange(session, updated).depleted).assertTrue();
+    });
+
+    it('usesAsiaShanghaiBusinessDates', 0, () => {
+      const utcLateAfternoon: number = Date.UTC(2026, 8, 1, 16, 30, 0);
+      expect(shanghaiDateAfterDays(0, utcLateAfternoon)).assertEqual('2026-09-02');
+      expect(shanghaiDateAfterDays(1, utcLateAfternoon)).assertEqual('2026-09-03');
+    });
+
+    it('validatesHospitalityAndReviewInputs', 0, () => {
+      expect(validateStayBooking('2026-09-02', '2026-09-04', 1, 2).valid).assertTrue();
+      expect(validateStayBooking('2026-09-04', '2026-09-02', 1, 2).valid).assertFalse();
+      expect(validateTimedBooking('2026-09-02T18:00:00+08:00', 4).valid).assertTrue();
+      expect(validateReview(5, '服务体验很好').valid).assertTrue();
+      expect(validateReview(0, '服务体验很好').valid).assertFalse();
+    });
+
+    it('detectsReservationAllocationConflict', 0, () => {
+      const allocation: ReservationAllocation = new ReservationAllocation();
+      allocation.starts_at = '2026-09-02T10:00:00';
+      allocation.ends_at = '2026-09-02T11:00:00';
+      const reservation: Reservation = new Reservation();
+      reservation.status = ReservationStatus.CONFIRMED;
+      reservation.allocations = [allocation];
+      expect(hasReservationConflict([reservation], '2026-09-02T10:30:00', '2026-09-02T11:30:00')).assertTrue();
+      expect(hasReservationConflict([reservation], '2026-09-02T11:00:00', '2026-09-02T12:00:00')).assertFalse();
+    });
+
+    it('parsesQueueEventAndRejectsStaleSequence', 0, () => {
+      const payload: string = '{"id":"queue-event-1","type":"queue.updated","occurred_at":"2026-09-01T10:00:00Z",' +
+        '"data":{"queue":{"id":"queue-1","queue_no":"Q001","experience_id":"ride-1",' +
+        '"experience_name":"飞行项目","status":"WAITING","party_size":2,"estimated_wait_minutes":20,' +
+        '"sequence":4,"joined_at":"2026-09-01T09:50:00Z","called_at":null,"itinerary_id":null,' +
+        '"itinerary_revision":null,"nearby_recommendations":[],"fast_pass":null},' +
+        '"source":"simulated","is_demo":true,"recommendation":null,"itinerary_id":null,' +
+        '"itinerary_revision":null}}';
+      expect(parseQueueEvent(payload).valid).assertTrue();
+      expect(parseQueueEvent('{broken').valid).assertFalse();
+      expect(shouldAcceptQueueSequence(3, 4)).assertTrue();
+      expect(shouldAcceptQueueSequence(4, 4)).assertFalse();
+      expect(shouldAcceptQueueEvent(4, 4, 'nearby.recommended')).assertTrue();
+      expect(shouldAcceptQueueEvent(4, 4, 'itinerary.replan_available')).assertTrue();
+      expect(shouldAcceptQueueEvent(4, 4, 'queue.updated')).assertFalse();
+      expect(shouldAcceptQueueEvent(4, 3, 'nearby.recommended')).assertFalse();
+      const event = parseQueueEvent(payload).envelope;
+      if (event !== null) {
+        expect(event.data.queue.status).assertEqual(QueueStatus.WAITING);
+      }
+    });
+
+    it('rejectsStaleQueueItinerarySuggestion', 0, () => {
+      expect(isCurrentItinerarySuggestion('trip-1', 3, 'trip-1', 3)).assertTrue();
+      expect(isCurrentItinerarySuggestion('trip-1', 3, 'trip-1', 2)).assertFalse();
+      expect(isCurrentItinerarySuggestion('trip-1', 3, 'trip-2', 3)).assertFalse();
+      expect(isCurrentItinerarySuggestion('trip-1', 3, null, null)).assertFalse();
+    });
+
+    it('recognizesQueueTerminalStates', 0, () => {
+      expect(isTerminalQueueStatus(QueueStatus.COMPLETED)).assertTrue();
+      expect(isTerminalQueueStatus(QueueStatus.LEFT)).assertTrue();
+      expect(isTerminalQueueStatus(QueueStatus.EXPIRED)).assertTrue();
+      expect(isTerminalQueueStatus(QueueStatus.WAITING)).assertFalse();
+      expect(isTerminalQueueStatus(QueueStatus.CALLED)).assertFalse();
+    });
+
+    it('reusesQueueJoinIdempotencyKeyAfterNetworkFailure', 0, () => {
+      const pending: PendingIdempotentOperation = new PendingIdempotentOperation();
+      const firstKey: string = pending.getOrCreate('ride-1:2:trip-1', 'queue-join');
+      pending.resolveFailure(0, true);
+      expect(pending.getOrCreate('ride-1:2:trip-1', 'queue-join')).assertEqual(firstKey);
+      pending.resolveFailure(409, false);
+      expect(pending.getKey()).assertEqual('');
     });
   });
 }
