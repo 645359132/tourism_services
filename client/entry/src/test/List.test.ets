@@ -1,5 +1,5 @@
-import localUnitTest from './LocalUnit.test';
+import tourismBusinessRulesTest from './LocalUnit.test';
 
 export default function testsuite() {
-  localUnitTest();
+  tourismBusinessRulesTest();
 }

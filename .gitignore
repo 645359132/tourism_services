@@ -5,6 +5,7 @@
 .venv/
 venv/
 .uv-cache/
+.ohpm-local/
 client/local.properties
 
 # IDE and HarmonyOS local state

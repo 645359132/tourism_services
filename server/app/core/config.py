@@ -6,7 +6,7 @@ import json
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     cors_allow_credentials: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = False
+    jwt_secret_key: str = "development-only-jwt-secret-key-change-me-32"
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    jwt_access_token_expire_minutes: int = Field(default=15, ge=1, le=1440)
+    jwt_refresh_token_expire_days: int = Field(default=7, ge=1, le=90)
+    jwt_issuer: str = "smart-tourism-service"
+    jwt_audience: str = "smart-tourism-client"
+    enable_demo_accounts: bool = False
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -59,6 +66,26 @@ class Settings(BaseSettings):
                 raise ValueError("CORS_ORIGINS JSON value must be a list")
             return parsed
         return [origin.strip() for origin in stripped.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def reject_insecure_production_jwt_secret(self) -> Settings:
+        """Fail production startup when a development or placeholder key is used."""
+
+        if self.app_env != "production":
+            return self
+
+        if self.enable_demo_accounts:
+            raise ValueError("Demo accounts must never be enabled in production")
+
+        normalized = self.jwt_secret_key.strip().lower()
+        insecure_markers = ("development", "placeholder", "replace", "change-me")
+        if len(self.jwt_secret_key.encode("utf-8")) < 32 or any(
+            marker in normalized for marker in insecure_markers
+        ):
+            raise ValueError(
+                "Production JWT_SECRET_KEY must be a non-placeholder secret of at least 32 bytes"
+            )
+        return self
 
 
 @lru_cache

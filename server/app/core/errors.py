@@ -25,12 +25,14 @@ class AppError(Exception):
         code: str,
         message: str,
         details: Any | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.details = details
+        self.headers = headers or {}
 
 
 def _request_id(request: Request) -> str:
@@ -44,6 +46,7 @@ def _error_response(
     code: str,
     message: str,
     details: Any | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     request_id = _request_id(request)
     content: dict[str, Any] = {
@@ -55,10 +58,11 @@ def _error_response(
     }
     if details is not None:
         content["error"]["details"] = jsonable_encoder(details)
+    response_headers = {"X-Request-ID": request_id, **(headers or {})}
     return JSONResponse(
         status_code=status_code,
         content=content,
-        headers={"X-Request-ID": request_id},
+        headers=response_headers,
     )
 
 
@@ -80,6 +84,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             code=exc.code,
             message=exc.message,
             details=exc.details,
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)
