@@ -84,7 +84,6 @@ import {
   itinerarySeverityLabel,
   localizeItineraryText,
   localizeItineraryTexts,
-  plannedRouteModeLabel,
   plannedRoutePathText,
   plannedRouteStepLabel,
   parseCrowdEnvelope,
@@ -343,10 +342,6 @@ export default function tourismBusinessRulesTest() {
       expect(plannedRouteStepLabel(routeNodeIds, 'museum')).assertEqual('终');
       expect(plannedRouteStepLabel(routeNodeIds, 'missing')).assertEqual('');
       expect(plannedRouteStepLabel(['entrance'], 'entrance')).assertEqual('起终');
-      expect(plannedRouteModeLabel(false, false)).assertEqual('普通步行路线');
-      expect(plannedRouteModeLabel(true, false)).assertEqual('轮椅可通行');
-      expect(plannedRouteModeLabel(false, true)).assertEqual('婴儿车可通行');
-      expect(plannedRouteModeLabel(true, true)).assertEqual('轮椅与婴儿车可通行');
       expect(plannedRoutePathText([entrance], ['missing'])).assertEqual('未知节点');
     });
 

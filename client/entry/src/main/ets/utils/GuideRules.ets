@@ -87,19 +87,6 @@ export function plannedRoutePathText(nodes: GuideMapNode[], routeNodeIds: string
   return names.join(' → ');
 }
 
-export function plannedRouteModeLabel(wheelchair: boolean, stroller: boolean): string {
-  if (wheelchair && stroller) {
-    return '轮椅与婴儿车可通行';
-  }
-  if (wheelchair) {
-    return '轮椅可通行';
-  }
-  if (stroller) {
-    return '婴儿车可通行';
-  }
-  return '普通步行路线';
-}
-
 export function itineraryKindLabel(kind: string): string {
   switch (kind) {
     case 'ATTRACTION':

@@ -17,13 +17,11 @@ import { NetworkResult } from '../network/HttpClient';
 import { GuideService } from '../network/services/GuideService';
 import {
   buildCrowdAlternative,
-  plannedRouteModeLabel,
   plannedRoutePathText,
   plannedRouteStepLabel,
   shouldAcceptCrowdSequence
 } from '../utils/GuideRules';
 import { ContentState } from '../models/AppModels';
-import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
 
 @Component
 export struct GuidePage {
@@ -46,8 +44,6 @@ export struct GuidePage {
   @State locationDemo: boolean = false;
   @State originNodeId: string = '';
   @State targetNodeId: string = '';
-  @State wheelchair: boolean = false;
-  @State stroller: boolean = false;
   @State routePlan: RoutePlanResponse | null = null;
   @State routeMessage: string = '选择起点和终点后，点击“规划路线”';
   @State routeBusy: boolean = false;
@@ -57,9 +53,6 @@ export struct GuidePage {
   private crowdSocket: CrowdSocket | null = null;
 
   aboutToAppear(): void {
-    const settings: AccessibilitySettings = AccessibilityStore.getInstance().getSettings();
-    this.wheelchair = settings.wheelchair;
-    this.stroller = settings.stroller;
     this.loadAll();
     this.startCrowdSocket();
   }
@@ -256,14 +249,11 @@ export struct GuidePage {
     this.routeRequestVersion = requestVersion;
     const originNodeId: string = this.originNodeId;
     const targetNodeId: string = this.targetNodeId;
-    const wheelchair: boolean = this.wheelchair;
-    const stroller: boolean = this.stroller;
     this.routeBusy = true;
     this.routeError = false;
     this.routePlan = null;
     this.routeMessage = '正在计算示意路线…';
-    const result: NetworkResult<RoutePlanResponse> = await this.service.planRoute(
-      originNodeId, targetNodeId, wheelchair, stroller);
+    const result: NetworkResult<RoutePlanResponse> = await this.service.planRoute(originNodeId, targetNodeId);
     if (requestVersion !== this.routeRequestVersion) {
       return;
     }
@@ -478,7 +468,7 @@ export struct GuidePage {
             .backgroundColor($r('app.color.surface_tint'))
 
           Column({ space: 10 }) {
-            Text('无障碍路线（示意图规则）')
+            Text('景区路线规划（示意图）')
               .width('100%')
               .fontSize(17)
               .fontWeight(FontWeight.Bold)
@@ -502,25 +492,6 @@ export struct GuidePage {
                 })
             }
             .width('100%')
-            Row() {
-              Text('轮椅路线').fontColor($r('app.color.text_primary')).layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.wheelchair })
-                .enabled(!this.routeBusy)
-                .onChange((value: boolean) => {
-                  this.wheelchair = value;
-                  AccessibilityStore.getInstance().setWheelchair(value);
-                  this.invalidateRoute('轮椅通行条件已更新，请重新规划路线');
-                })
-              Text('亲子推车').fontColor($r('app.color.text_primary')).layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.stroller })
-                .enabled(!this.routeBusy)
-                .onChange((value: boolean) => {
-                  this.stroller = value;
-                  AccessibilityStore.getInstance().setStroller(value);
-                  this.invalidateRoute('婴儿车通行条件已更新，请重新规划路线');
-                })
-            }
-            .width('100%')
             if (this.routePlan === null) {
               Text(this.routeMessage)
                 .width('100%')
@@ -538,7 +509,7 @@ export struct GuidePage {
                     .fontWeight(FontWeight.Bold)
                     .fontColor($r('app.color.primary'))
                     .layoutWeight(1)
-                  Text(plannedRouteModeLabel(this.wheelchair, this.stroller))
+                  Text('普通步行路线')
                     .fontSize(10)
                     .fontColor($r('app.color.success'))
                 }

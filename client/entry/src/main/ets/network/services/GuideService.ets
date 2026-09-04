@@ -14,11 +14,11 @@ class RoutePlanPayload {
   wheelchair: boolean;
   stroller: boolean;
 
-  constructor(fromNodeId: string, toNodeId: string, wheelchair: boolean, stroller: boolean) {
+  constructor(fromNodeId: string, toNodeId: string) {
     this.from_node_id = fromNodeId;
     this.to_node_id = toNodeId;
-    this.wheelchair = wheelchair;
-    this.stroller = stroller;
+    this.wheelchair = false;
+    this.stroller = false;
   }
 }
 
@@ -48,9 +48,8 @@ export class GuideService {
     return this.client.request<CrowdResponse>(new ApiRequest('/guide/crowd', ApiMethod.GET, '', false));
   }
 
-  planRoute(fromNodeId: string, toNodeId: string, wheelchair: boolean,
-    stroller: boolean): Promise<NetworkResult<RoutePlanResponse>> {
-    const payload: RoutePlanPayload = new RoutePlanPayload(fromNodeId, toNodeId, wheelchair, stroller);
+  planRoute(fromNodeId: string, toNodeId: string): Promise<NetworkResult<RoutePlanResponse>> {
+    const payload: RoutePlanPayload = new RoutePlanPayload(fromNodeId, toNodeId);
     return this.client.request<RoutePlanResponse>(new ApiRequest(
       '/guide/routes/plan', ApiMethod.POST, JSON.stringify(payload), false, 0));
   }
