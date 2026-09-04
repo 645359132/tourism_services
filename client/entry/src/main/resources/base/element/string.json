@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "module description"
+      "value": "智慧景区旅游服务系统"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "description"
+      "value": "智慧景区旅游服务系统主入口"
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "云游智景"
     }
   ]
 }

@@ -258,7 +258,7 @@ export struct TicketPage {
     if (result.successful && result.data !== null) {
       this.payPending.resolveSuccess();
       this.replaceOrder(result.data);
-      this.operationMessage = `订单 ${result.data.order_no} 支付成功`;
+      this.operationMessage = `订单 ${result.data.order_no} 演示支付成功`;
     } else {
       this.resolvePendingFailure(this.payPending, result.error);
       this.operationMessage = this.errorText(result.error);
@@ -652,7 +652,7 @@ export struct TicketPage {
 
       Row({ space: 8 }) {
         if (canApplyTicketAction(order.status, TicketOrderAction.PAY)) {
-          Button('立即支付').fontSize(12).fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => {
+          Button('演示支付').fontSize(12).fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => {
             this.pay(order);
           })
         }
