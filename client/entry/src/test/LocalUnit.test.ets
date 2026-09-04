@@ -5,6 +5,7 @@ import {
   QueueStatus,
   Reservation,
   ReservationAllocation,
+  ReservationKind,
   ReservationStatus,
   SessionStatus
 } from '../main/ets/models/BookingModels';
@@ -61,10 +62,13 @@ import { globalContentExtent, globalContentScale } from '../main/ets/utils/Acces
 import { WindowSizeClass, classifyWindowWidth, isWideWindow } from '../main/ets/utils/ResponsiveRules';
 import {
   detectSessionInventoryChange,
+  hasActiveStayConflict,
   hasReservationConflict,
   isCurrentItinerarySuggestion,
   isTerminalQueueStatus,
   parseQueueEvent,
+  reservationRenderKey,
+  reservationStatusLabel,
   shanghaiDateAfterDays,
   shouldAcceptQueueEvent,
   shouldAcceptQueueSequence,
@@ -143,6 +147,14 @@ export default function tourismBusinessRulesTest() {
       const offline: ApiErrorInfo = mapApiError(0, '', true);
       const usernameTaken: ApiErrorInfo = mapApiError(409,
         '{"error":{"code":"USERNAME_TAKEN","message":"Username is already registered"}}', false);
+      const scheduleConflict: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"SCHEDULE_CONFLICT","message":"Stay overlaps an active stay booking"}}', false);
+      const repeatedAction: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Cancellation key differs"}}', false);
+      const cancelledConfirmation: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"RESERVATION_NOT_CONFIRMABLE","message":"Reservation is not confirmable"}}', false);
+      const unavailableInventory: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"INVENTORY_UNAVAILABLE","message":"Stay inventory is unavailable"}}', false);
 
       expect(unauthorized.code).assertEqual(ApiErrorCode.UNAUTHORIZED);
       expect(unauthorized.retriable).assertFalse();
@@ -152,6 +164,12 @@ export default function tourismBusinessRulesTest() {
       expect(usernameTaken.code).assertEqual(ApiErrorCode.CONFLICT);
       expect(usernameTaken.statusCode).assertEqual(409);
       expect(usernameTaken.serverCode).assertEqual('USERNAME_TAKEN');
+      expect(scheduleConflict.userMessage)
+        .assertEqual('所选时段与已有门票或预约重叠，请更换时段或先处理已有订单');
+      expect(repeatedAction.userMessage)
+        .assertEqual('该操作已完成或请求内容已变化，请刷新后重试');
+      expect(cancelledConfirmation.userMessage).assertEqual('预约状态已更新，当前无法确认');
+      expect(unavailableInventory.userMessage).assertEqual('当前库存不足，请重新查询可用时段');
     });
 
     it('mapsTimeoutBeforeUnknownError', 0, () => {
@@ -457,6 +475,32 @@ export default function tourismBusinessRulesTest() {
       reservation.allocations = [allocation];
       expect(hasReservationConflict([reservation], '2026-09-02T10:30:00', '2026-09-02T11:30:00')).assertTrue();
       expect(hasReservationConflict([reservation], '2026-09-02T11:00:00', '2026-09-02T12:00:00')).assertFalse();
+    });
+
+    it('preventsDuplicateStayAndRefreshesReservationStateKey', 0, () => {
+      const reservation: Reservation = new Reservation();
+      reservation.id = 'stay-1';
+      reservation.kind = ReservationKind.STAY;
+      reservation.status = ReservationStatus.HELD;
+      reservation.starts_at = '2026-09-05T07:00:00Z';
+      reservation.ends_at = '2026-09-06T03:00:00Z';
+
+      expect(hasActiveStayConflict([reservation], '2026-09-05', '2026-09-06')).assertTrue();
+      expect(reservationStatusLabel(reservation.status)).assertEqual('待确认');
+      const heldKey: string = reservationRenderKey(reservation);
+      reservation.status = ReservationStatus.CONFIRMED;
+      expect(hasActiveStayConflict([reservation], '2026-09-05', '2026-09-06')).assertTrue();
+      expect(reservationStatusLabel(reservation.status)).assertEqual('已确认');
+      expect(reservationRenderKey(reservation) === heldKey).assertFalse();
+      reservation.status = ReservationStatus.CANCELLED;
+      expect(hasActiveStayConflict([reservation], '2026-09-05', '2026-09-06')).assertFalse();
+      expect(reservationStatusLabel(reservation.status)).assertEqual('已取消');
+      expect(reservationRenderKey(reservation) === heldKey).assertFalse();
+      reservation.status = ReservationStatus.EXPIRED;
+      expect(hasActiveStayConflict([reservation], '2026-09-05', '2026-09-06')).assertFalse();
+      reservation.status = ReservationStatus.CONFIRMED;
+      expect(hasActiveStayConflict([reservation], '2026-09-06', '2026-09-07')).assertFalse();
+      expect(hasActiveStayConflict([reservation], '2026-09-04', '2026-09-06')).assertTrue();
     });
 
     it('parsesQueueEventAndRejectsStaleSequence', 0, () => {

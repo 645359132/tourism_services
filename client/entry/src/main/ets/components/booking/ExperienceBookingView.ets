@@ -30,6 +30,8 @@ import {
   hasReservationConflict,
   isCurrentItinerarySuggestion,
   isTerminalQueueStatus,
+  reservationRenderKey,
+  reservationStatusLabel,
   shanghaiDateAfterDays,
   shouldAcceptQueueEvent,
   validateBookingDate,
@@ -522,7 +524,7 @@ export struct ExperienceBookingView {
     Column({ space: 7 }) {
       Row() {
         Text(value.resource_name).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
-        Text(value.status).fontSize(11).fontColor(value.status === ReservationStatus.CONFIRMED ?
+        Text(reservationStatusLabel(value.status)).fontSize(11).fontColor(value.status === ReservationStatus.CONFIRMED ?
           $r('app.color.success') : $r('app.color.warning'))
       }.width('100%')
       Text(`${value.starts_at} · ${value.party_size} 人 · provider=${value.provider} · demo=${value.is_demo}`)
@@ -670,7 +672,8 @@ export struct ExperienceBookingView {
           Text('我的项目预约').width('100%').fontSize(17).fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
           ForEach(this.reservations.filter((value: Reservation) => value.kind === ReservationKind.EXPERIENCE),
-            (value: Reservation) => { this.reservationCard(value) }, (value: Reservation) => value.id)
+            (value: Reservation) => { this.reservationCard(value) },
+            (value: Reservation) => reservationRenderKey(value))
           TextInput({ text: this.cancelReason, placeholder: '取消预约原因' }).width('100%')
             .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
             .onChange((value: string) => { this.cancelReason = value; })

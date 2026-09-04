@@ -304,7 +304,7 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 |---|---|
 | 服务端 pytest | 146 tests passed；分支覆盖率 72.63%，通过 `>= 70%` 门禁；包含游客注册与 PostgreSQL 离线 DDL 门禁 |
 | Ruff | `uv run ruff check .` 通过 |
-| HarmonyOS 本地业务测试 | Hvigor `test`：44 passed，Failure 0，Error 0 |
+| HarmonyOS 本地业务测试 | Hvigor `test`：45 passed，Failure 0，Error 0 |
 | 真实网络 smoke | 当前 runner 为 49/49，其中注册、注册会话和重复用户名占 3 项；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
 | Locust 本机基线 | 5 users / 30 s；CSV 320 requests、0 failures、11.42 req/s、aggregate p95 160 ms |
 | Locust Compose 基线 | PostgreSQL 16 + Redis 7 + 双 worker；CSV 319 requests、0 failures、11.33 req/s、aggregate p95 130 ms |

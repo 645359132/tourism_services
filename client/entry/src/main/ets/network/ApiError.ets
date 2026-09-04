@@ -68,7 +68,40 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
     return new ApiErrorInfo(ApiErrorCode.NOT_FOUND, '未找到请求的内容', statusCode, false, serverCode);
   }
   if (statusCode === 409) {
-    return new ApiErrorInfo(ApiErrorCode.CONFLICT, '当前操作与已有数据冲突', statusCode, false, serverCode);
+    let conflictMessage: string = '当前操作与已有数据冲突';
+    switch (serverCode) {
+      case 'SCHEDULE_CONFLICT':
+        conflictMessage = '所选时段与已有门票或预约重叠，请更换时段或先处理已有订单';
+        break;
+      case 'INSUFFICIENT_INVENTORY':
+      case 'INVENTORY_UNAVAILABLE':
+        conflictMessage = '当前库存不足，请重新查询可用时段';
+        break;
+      case 'INVENTORY_CONFLICT':
+        conflictMessage = '库存状态已变化，请重新查询后再试';
+        break;
+      case 'RESERVATION_EXPIRED':
+        conflictMessage = '预约保留已过期，请重新查询库存后预约';
+        break;
+      case 'RESERVATION_NOT_CONFIRMABLE':
+        conflictMessage = '预约状态已更新，当前无法确认';
+        break;
+      case 'RESERVATION_NOT_CANCELLABLE':
+        conflictMessage = '预约状态已更新，当前无法取消';
+        break;
+      case 'IDEMPOTENCY_CONFLICT':
+        conflictMessage = '该操作已完成或请求内容已变化，请刷新后重试';
+        break;
+      case 'BOOKING_WINDOW_CLOSED':
+        conflictMessage = '所选预约时段已经开始，请重新选择';
+        break;
+      case 'SESSION_CLOSED':
+        conflictMessage = '所选场次已关闭，请选择其他时段';
+        break;
+      default:
+        break;
+    }
+    return new ApiErrorInfo(ApiErrorCode.CONFLICT, conflictMessage, statusCode, false, serverCode);
   }
   if (statusCode === 429) {
     return new ApiErrorInfo(ApiErrorCode.RATE_LIMITED, '操作过于频繁，请稍后再试', statusCode, true, serverCode);

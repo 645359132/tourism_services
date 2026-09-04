@@ -3,6 +3,7 @@ import {
   QueueEventEnvelope,
   QueueStatus,
   Reservation,
+  ReservationKind,
   ReservationStatus,
   SessionStatus
 } from '../models/BookingModels';
@@ -95,6 +96,60 @@ export function detectSessionInventoryChange(previous: ExperienceSession | null,
   return new SessionInventoryChange(true, false, `场次库存已更新，当前剩余 ${current.remaining} 个名额`);
 }
 
+function reservationIntervalsOverlap(firstStart: string, firstEnd: string,
+  secondStart: string, secondEnd: string): boolean {
+  const firstStartMs: number = Date.parse(firstStart);
+  const firstEndMs: number = Date.parse(firstEnd);
+  const secondStartMs: number = Date.parse(secondStart);
+  const secondEndMs: number = Date.parse(secondEnd);
+  if (!Number.isNaN(firstStartMs) && !Number.isNaN(firstEndMs) &&
+    !Number.isNaN(secondStartMs) && !Number.isNaN(secondEndMs)) {
+    return firstStartMs < secondEndMs && firstEndMs > secondStartMs;
+  }
+  return firstStart < secondEnd && firstEnd > secondStart;
+}
+
+export function hasActiveStayConflict(reservations: Reservation[], checkIn: string, checkOut: string): boolean {
+  if (!validateBookingDate(checkIn).valid || !validateBookingDate(checkOut).valid || checkIn >= checkOut) {
+    return false;
+  }
+  const requestedStart: string = `${checkIn}T15:00:00+08:00`;
+  const requestedEnd: string = `${checkOut}T11:00:00+08:00`;
+  for (let index: number = 0; index < reservations.length; index++) {
+    const reservation: Reservation = reservations[index];
+    const active: boolean = reservation.status === ReservationStatus.HELD ||
+      reservation.status === ReservationStatus.CONFIRMED;
+    if (reservation.kind === ReservationKind.STAY && active &&
+      reservationIntervalsOverlap(requestedStart, requestedEnd, reservation.starts_at, reservation.ends_at)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function reservationRenderKey(reservation: Reservation): string {
+  return `${reservation.id}:${reservation.status}`;
+}
+
+export function reservationStatusLabel(status: ReservationStatus): string {
+  switch (status) {
+    case ReservationStatus.HELD:
+      return '待确认';
+    case ReservationStatus.CONFIRMED:
+      return '已确认';
+    case ReservationStatus.COMPLETED:
+      return '已完成';
+    case ReservationStatus.CANCELLED:
+      return '已取消';
+    case ReservationStatus.EXPIRED:
+      return '已过期';
+    case ReservationStatus.NO_SHOW:
+      return '未到场';
+    default:
+      return status;
+  }
+}
+
 export function hasReservationConflict(reservations: Reservation[], startsAt: string, endsAt: string): boolean {
   for (let reservationIndex: number = 0; reservationIndex < reservations.length; reservationIndex++) {
     const reservation: Reservation = reservations[reservationIndex];
@@ -103,7 +158,7 @@ export function hasReservationConflict(reservations: Reservation[], startsAt: st
     }
     for (let allocationIndex: number = 0; allocationIndex < reservation.allocations.length; allocationIndex++) {
       const allocation = reservation.allocations[allocationIndex];
-      if (startsAt < allocation.ends_at && endsAt > allocation.starts_at) {
+      if (reservationIntervalsOverlap(startsAt, endsAt, allocation.starts_at, allocation.ends_at)) {
         return true;
       }
     }

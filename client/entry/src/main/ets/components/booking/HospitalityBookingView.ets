@@ -21,6 +21,9 @@ import { NetworkResult } from '../../network/HttpClient';
 import { BookingService } from '../../network/services/BookingService';
 import {
   BookingRuleResult,
+  hasActiveStayConflict,
+  reservationRenderKey,
+  reservationStatusLabel,
   shanghaiDateAfterDays,
   validateBookingDate,
   validateReview,
@@ -106,6 +109,11 @@ export struct HospitalityBookingView {
     return null;
   }
 
+  private hasSelectedStayConflict(): boolean {
+    return this.selectedKind === OfferKind.ROOM &&
+      hasActiveStayConflict(this.reservations, this.dateFrom, this.dateTo);
+  }
+
   private async loadCatalog(): Promise<void> {
     this.contentState = ContentState.LOADING;
     const venueResult: NetworkResult<VenueListResponse> = await this.service.listVenues();
@@ -129,11 +137,13 @@ export struct HospitalityBookingView {
     this.contentState = visible.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
   }
 
-  private async loadReservations(): Promise<void> {
+  private async loadReservations(): Promise<boolean> {
     const result: NetworkResult<ReservationListResponse> = await this.service.listReservations();
     if (result.successful && result.data !== null) {
       this.reservations = result.data.items;
+      return true;
     }
+    return false;
   }
 
   private switchKind(value: OfferKind): void {
@@ -145,7 +155,7 @@ export struct HospitalityBookingView {
     this.contentState = visible.length > 0 ? ContentState.CONTENT : ContentState.EMPTY;
   }
 
-  private async checkAvailability(): Promise<void> {
+  private async checkAvailability(announce: boolean = true): Promise<void> {
     if (this.operationBusy) {
       return;
     }
@@ -165,8 +175,10 @@ export struct HospitalityBookingView {
       offer.id, this.dateFrom, this.dateTo);
     this.operationBusy = false;
     if (!result.successful || result.data === null) {
-      this.contentState = this.stateForError(result.error);
-      this.operationMessage = this.errorText(result.error);
+      if (announce) {
+        this.contentState = this.stateForError(result.error);
+        this.operationMessage = this.errorText(result.error);
+      }
       return;
     }
     this.availability = result.data.items;
@@ -177,8 +189,10 @@ export struct HospitalityBookingView {
     if (this.availability.length > 0) {
       this.startsAt = this.availability[0].start_at;
     }
-    this.contentState = this.availability.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
-    this.operationMessage = this.availability.length === 0 ? '当前日期范围无可用库存' : '已读取真实库存';
+    if (announce) {
+      this.contentState = this.availability.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
+      this.operationMessage = this.availability.length === 0 ? '当前日期范围无可用库存' : '已读取真实库存';
+    }
   }
 
   private replaceReservation(value: Reservation): void {
@@ -210,45 +224,68 @@ export struct HospitalityBookingView {
       this.operationMessage = '请先选择餐住产品';
       return;
     }
-    if (this.partySize > offer.max_party_size) {
+    const bookingKind: OfferKind = this.selectedKind;
+    const bookingDateFrom: string = this.dateFrom;
+    const bookingDateTo: string = this.dateTo;
+    const bookingStartsAt: string = this.startsAt;
+    const bookingQuantity: number = this.quantity;
+    const bookingPartySize: number = this.partySize;
+    if (bookingPartySize > offer.max_party_size) {
       this.operationMessage = `该产品最多接待 ${offer.max_party_size} 人`;
       return;
     }
     let validation: BookingRuleResult = new BookingRuleResult(true, '');
-    if (this.selectedKind === OfferKind.ROOM) {
-      validation = validateStayBooking(this.dateFrom, this.dateTo, this.quantity, this.partySize);
-    } else if (this.selectedKind === OfferKind.MEAL) {
-      validation = validateTimedBooking(this.startsAt, this.partySize);
+    if (bookingKind === OfferKind.ROOM) {
+      validation = validateStayBooking(bookingDateFrom, bookingDateTo, bookingQuantity, bookingPartySize);
+    } else if (bookingKind === OfferKind.MEAL) {
+      validation = validateTimedBooking(bookingStartsAt, bookingPartySize);
     } else {
-      validation = validateTimedBooking(`${this.dateFrom}T09:00`, this.partySize);
+      validation = validateTimedBooking(`${bookingDateFrom}T09:00`, bookingPartySize);
     }
     if (!validation.valid) {
       this.operationMessage = validation.message;
       return;
     }
-    const operationId: string = `${offer.id}:${this.dateFrom}:${this.dateTo}:${this.startsAt}:` +
-      `${this.quantity}:${this.partySize}`;
-    const key: string = this.bookingPending.getOrCreate(operationId, 'hospitality-booking');
     this.operationBusy = true;
-    let result: NetworkResult<Reservation>;
-    if (this.selectedKind === OfferKind.ROOM) {
-      result = await this.service.bookStay(offer.id, this.dateFrom, this.dateTo,
-        this.quantity, this.partySize, key);
-    } else if (this.selectedKind === OfferKind.MEAL) {
-      result = await this.service.bookDining(offer.id, this.startsAt, this.partySize, key);
-    } else {
-      result = await this.service.bookBundle(offer.id, this.dateFrom, this.partySize, key);
+    const reservationsCurrent: boolean = await this.loadReservations();
+    if (!reservationsCurrent) {
+      this.operationBusy = false;
+      this.operationMessage = '无法刷新已有预约，请检查网络后重试';
+      return;
     }
-    this.operationBusy = false;
+    if (bookingKind === OfferKind.ROOM && hasActiveStayConflict(
+      this.reservations, bookingDateFrom, bookingDateTo)) {
+      this.operationBusy = false;
+      this.operationMessage = '所选日期已有待确认或已确认的住宿，请先处理下方已有预约';
+      return;
+    }
+    const operationId: string = `${offer.id}:${bookingDateFrom}:${bookingDateTo}:${bookingStartsAt}:` +
+      `${bookingQuantity}:${bookingPartySize}`;
+    const key: string = this.bookingPending.getOrCreate(operationId, 'hospitality-booking');
+    let result: NetworkResult<Reservation>;
+    if (bookingKind === OfferKind.ROOM) {
+      result = await this.service.bookStay(offer.id, bookingDateFrom, bookingDateTo,
+        bookingQuantity, bookingPartySize, key);
+    } else if (bookingKind === OfferKind.MEAL) {
+      result = await this.service.bookDining(offer.id, bookingStartsAt, bookingPartySize, key);
+    } else {
+      result = await this.service.bookBundle(offer.id, bookingDateFrom, bookingPartySize, key);
+    }
     if (result.successful && result.data !== null) {
       this.bookingPending.resolveSuccess();
       this.replaceReservation(result.data);
-      this.operationMessage = `预约 ${result.data.booking_no} 已创建；provider=${result.data.provider}/demo=${result.data.is_demo}`;
-      await this.checkAvailability();
+      await this.loadReservations();
+      this.contentState = ContentState.CONTENT;
+      this.operationBusy = false;
+      await this.checkAvailability(false);
+      this.operationMessage = `预约 ${result.data.booking_no} 已创建，请在下方确认`;
     } else {
       this.resolveFailure(this.bookingPending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadReservations();
+      }
+      this.operationBusy = false;
       this.operationMessage = this.errorText(result.error);
-      await this.checkAvailability();
     }
   }
 
@@ -259,11 +296,19 @@ export struct HospitalityBookingView {
     this.operationBusy = true;
     const key: string = this.confirmPending.getOrCreate(value.id, 'hospitality-confirm');
     const result: NetworkResult<Reservation> = await this.service.confirmReservation(value.id, key);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
-      this.confirmPending.resolveSuccess(); this.replaceReservation(result.data);
+      this.confirmPending.resolveSuccess();
+      this.replaceReservation(result.data);
+      await this.loadReservations();
       this.operationMessage = '餐住预约已确认；未发生真实支付';
-    } else { this.resolveFailure(this.confirmPending, result.error); this.operationMessage = this.errorText(result.error); }
+    } else {
+      this.resolveFailure(this.confirmPending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadReservations();
+      }
+      this.operationMessage = this.errorText(result.error);
+    }
+    this.operationBusy = false;
   }
 
   private async cancel(value: Reservation): Promise<void> {
@@ -279,10 +324,19 @@ export struct HospitalityBookingView {
     const key: string = this.cancelPending.getOrCreate(operationId, 'hospitality-cancel');
     const result: NetworkResult<Reservation> = await this.service.cancelReservation(
       value.id, this.cancelReason.trim(), key);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
-      this.cancelPending.resolveSuccess(); this.replaceReservation(result.data); this.operationMessage = '餐住预约已取消';
-    } else { this.resolveFailure(this.cancelPending, result.error); this.operationMessage = this.errorText(result.error); }
+      this.cancelPending.resolveSuccess();
+      this.replaceReservation(result.data);
+      await this.loadReservations();
+      this.operationMessage = '餐住预约已取消';
+    } else {
+      this.resolveFailure(this.cancelPending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadReservations();
+      }
+      this.operationMessage = this.errorText(result.error);
+    }
+    this.operationBusy = false;
   }
 
   private async submitReview(value: Reservation): Promise<void> {
@@ -416,7 +470,12 @@ export struct HospitalityBookingView {
             .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
             .onChange((value: string) => { this.startsAt = value; })
         }
-        Button(this.operationBusy ? '处理中…' : '提交 API 预约').enabled(!this.operationBusy).width('100%')
+        if (this.hasSelectedStayConflict()) {
+          Text('检测到所选日期已有住宿预约；提交时会先刷新状态')
+            .width('100%').fontSize(11).fontColor($r('app.color.warning'))
+        }
+        Button(this.operationBusy ? '处理中…' : '提交 API 预约')
+          .enabled(!this.operationBusy).width('100%')
           .fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => { this.bookSelected(); })
 
         if (this.reservations.length > 0) {
@@ -431,7 +490,9 @@ export struct HospitalityBookingView {
                 Row() {
                   Text(value.resource_name).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
                     .layoutWeight(1)
-                  Text(value.status).fontSize(11).fontColor($r('app.color.warning'))
+                  Text(reservationStatusLabel(value.status)).fontSize(11)
+                    .fontColor(value.status === ReservationStatus.CONFIRMED ?
+                      $r('app.color.success') : $r('app.color.warning'))
                 }.width('100%')
                 Text(`${value.starts_at} - ${value.ends_at} · ${formatMoney(value.total_cents)} · ` +
                   `provider=${value.provider}/demo=${value.is_demo}`).fontSize(10).fontColor($r('app.color.text_secondary'))
@@ -443,6 +504,9 @@ export struct HospitalityBookingView {
                     Button('取消').enabled(!this.operationBusy).fontSize(11).fontColor($r('app.color.error'))
                       .onClick(() => { this.cancel(value); })
                   }.width('100%')
+                } else if (value.status === ReservationStatus.CONFIRMED) {
+                  Button('取消预约').enabled(!this.operationBusy).fontSize(11).fontColor($r('app.color.error'))
+                    .onClick(() => { this.cancel(value); })
                 } else if (value.status === ReservationStatus.COMPLETED) {
                   Button('评价').enabled(!this.operationBusy).fontSize(11)
                     .onClick(() => { this.reviewReservationId = value.id; })
@@ -464,7 +528,7 @@ export struct HospitalityBookingView {
                   }.width('100%')
                 }
               }.width('100%').padding(13).borderRadius(14).backgroundColor($r('app.color.surface'))
-            }, (value: Reservation) => value.id)
+            }, (value: Reservation) => reservationRenderKey(value))
         }
         if (this.operationMessage.length > 0) {
           Text(this.operationMessage).width('100%').padding(10).fontSize(11).fontColor($r('app.color.warning'))
