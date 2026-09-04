@@ -4,6 +4,8 @@
 
 系统已经打通游客、商户、客服、管理员四种角色，以及门票交易、导览与人流、规则行程、项目预约与排队、餐住组合预约、商城与积分、反馈客服、同行协作、无障碍、离线应急、文化护照和绿色任务。外部支付、地图、AI、闸机、救援等能力均通过明确标注的 Demo Provider 隔离，不会产生真实扣款、导航或救援派单。
 
+运行入口：日常保留数据的完整 PostgreSQL + Redis + HarmonyOS 流程见[全栈日常启动指南](docs/testing/full-stack-startup.md)；需要独立 project、全新空卷和完整证据检查时使用[最终验收手册](docs/testing/acceptance.md)。
+
 ## 功能概览
 
 - JWT 登录、刷新令牌轮换与重放防护、Argon2id 密码散列、游客/商户/客服/管理员 RBAC。
@@ -203,6 +205,8 @@ uv run locust -f load/locustfile.py `
 
 完整模式使用 PostgreSQL 作为权威数据存储，Redis 承担跨 worker 缓存、限流、一次性 WebSocket ticket、锁、发布者选主和 pub/sub；API 容器运行两个 Uvicorn worker。Dockerfile 会在 API 启动前自动执行迁移和幂等 seed。
 
+推荐按[全栈日常启动指南](docs/testing/full-stack-startup.md)依次完成 Docker、环境变量、数据库/Redis 检查、服务端门禁、真实 smoke、HarmonyOS 构建、人工闭环和可选 Locust。下面仅保留最短启动路径。
+
 以下命令从仓库根目录执行：
 
 ```powershell
@@ -310,6 +314,7 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 详细证据与复验范围：
 
+- [全栈日常启动指南](docs/testing/full-stack-startup.md)
 - [全栈验收说明](docs/testing/acceptance.md)
 - [客户端质量与设备矩阵](docs/testing/client-quality.md)
 - [本地性能基线与原始 CSV](docs/performance/README.md)

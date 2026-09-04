@@ -13,7 +13,7 @@
 | 7. 商城、客服、协作与无障碍 | 已完成 | 商城/积分/反馈/客服 WS/同行双重隐私/适老设施；server pytest 67 passed/70%；客户端 29 tests、真实 REST/WS 与 HAP 通过 |
 | 8. 离线应急与数字护照 | 已完成 | 5 项离线资产/ETag 304/用户隔离缓存与 outbox/只读冷启动/SOS Demo/护照与绿色积分；server pytest 73 passed/70%；客户端 37 tests、真实 REST 与 HAP 通过；phone/tablet 720vp 分栏实现 |
 | 9. 综合质量与容量基线 | 已完成 | canonical pytest 130 passed/72.65%（门禁 70%）；SQLite 与 PostgreSQL + Redis 双 worker 的真实 smoke 均 46/46（3 条 WS）；SQLite Locust 5u/30s 为 320 请求/0 失败/p95 160ms，Compose 为 319 请求/0 失败/p95 130ms；安全/分页/并发/跨方言 DDL 回归；客户端 lint/test/HAP 通过 |
-| 10. 文档与最终验收 | 已完成 | README、架构/API、76 表数据模型、Mock 边界、创新点索引与验收手册齐备；SQLite/PostgreSQL 空库迁移、重复 seed、schema drift、130 项服务端测试、双模式 46-check smoke、两组 5u/30s Locust、OHPM/lint/37 项客户端测试/两类 HAP 全部复验；文档与仓库卫生扫描通过 |
+| 10. 文档与最终验收 | 已完成 | README、全栈日常启动、隔离验收、架构/API、76 表数据模型、Mock 边界与创新点索引齐备；SQLite/PostgreSQL 空库迁移、重复 seed、schema drift、130 项服务端测试、双模式 46-check smoke、两组 5u/30s Locust、OHPM/lint/37 项客户端测试/两类 HAP 全部复验；文档与仓库卫生扫描通过 |
 
 外部环境边界：
 
