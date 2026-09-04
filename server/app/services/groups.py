@@ -87,6 +87,8 @@ async def group_response(
             select(User).where(User.id.in_([member.user_id for member in group.members]))
         )
     }
+    # 创新点 5: 位置和状态采用“群组总开关 ∩ 成员本人授权”的双层隐私模型;
+    # 任意一层关闭都在响应组装时脱敏, 不能靠客户端隐藏来代替服务端授权。
     members = [
         GroupMemberResponse(
             user_id=str(member.user_id),
@@ -290,6 +292,7 @@ async def update_group_privacy(
     if transitioned.rowcount != 1:
         await session.rollback()
         raise _error(409, "GROUP_REVISION_CONFLICT", "Group revision changed")
+    # 创新点 5: 关闭群组位置共享时同步擦除历史坐标, 防止以后重新开启时意外暴露旧位置。
     for group_member in group.members:
         if not share_location:
             group_member.latitude_e6 = None

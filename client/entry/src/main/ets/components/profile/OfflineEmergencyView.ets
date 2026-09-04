@@ -122,6 +122,7 @@ export struct OfflineEmergencyView {
 
   private restoreLocalState(): void {
     if (!this.loggedIn) {
+      // 创新点 7：未登录冷启动只恢复最小身份并强制只读，不借离线缓存绕过在线认证。
       const profile: OfflineProfile | null = TravelPersistenceStore.getInstance().loadOfflineProfile();
       if (profile === null) { this.travelState = OfflineTravelState.AUTH_REQUIRED; return; }
       this.offlineOwnerId = profile.user_id;
@@ -133,6 +134,7 @@ export struct OfflineEmergencyView {
     if (packPayload.length > 0) {
       try {
         const restored: OfflinePackCache = JSON.parse(packPayload) as OfflinePackCache;
+        // 离线包必须同时通过架构版本、所属用户、manifest 和内容指纹校验，失败时整包拒绝使用。
         if (isOfflineCacheValid(restored, this.userId())) {
           this.cache = restored;
           this.travelState = OfflineTravelState.READY;
@@ -328,6 +330,7 @@ export struct OfflineEmergencyView {
     mutation.entity_id = entityId;
     mutation.operation = 'UPSERT';
     mutation.payload = payload;
+    // 创新点 7：仅便签、行程确认和应急公告确认等白名单操作可入队，敏感操作保持在线执行。
     if (!isSafeOfflineMutation(mutation)) {
       this.operationMessage = '离线操作不在安全同步白名单中';
       return;
@@ -440,6 +443,7 @@ export struct OfflineEmergencyView {
       this.outbox.applied_sync = mergedRecords.slice(Math.max(0, mergedRecords.length - 100));
       this.outbox.sync_cursor = pullResult.data.next_cursor;
       cursor = pullResult.data.next_cursor;
+      // 每页成功后立即落盘游标；中途断网只重取未完成页，已应用记录用于抑制重复展示。
       this.persistOutbox();
       pullComplete = !pullResult.data.has_more;
       pageCount += 1;
@@ -552,12 +556,14 @@ export struct OfflineEmergencyView {
       `${this.sosLatitude}:${this.sosLongitude}`;
     let key: string = this.sosPending.getOrCreate(operationId, 'demo-sos');
     const cachedDraft: LocalSosDraft | null = this.outbox.local_sos;
+    // 创新点 7：重试同一 SOS 草稿沿用幂等键，避免弱网恢复时生成多条重复记录。
     if (cachedDraft !== null && cachedDraft.local_status !== 'TERMINAL' &&
       cachedDraft.idempotency_key.length > 0) {
       key = cachedDraft.idempotency_key;
     }
     this.refreshNetworkState();
     if (this.networkQuality === NetworkQuality.OFFLINE) {
+      // 离线 SOS 只保存本地草稿并明确“未派警”；恢复网络后仍需用户主动重试。
       const localDraft: LocalSosDraft = this.buildLocalSos(key);
       localDraft.local_status = 'PENDING_SYNC';
       this.outbox.local_sos = localDraft;
@@ -813,6 +819,7 @@ export struct OfflineEmergencyView {
         Text(this.operationMessage).width('100%').padding(9).borderRadius(10).fontSize(9)
           .fontColor($r('app.color.warning')).backgroundColor($r('app.color.surface_tint'))
       }
+    // 创新点 6：统一宽屏断点在单列与双列之间切换，适配手机和 720vp 以上平板窗口。
     }.width('100%').onAreaChange((_oldArea: Area, newArea: Area) => {
       this.isWide = isWideWindow(Number(newArea.width));
     })

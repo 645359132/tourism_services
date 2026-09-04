@@ -366,6 +366,7 @@ export struct ExperienceBookingView {
   private connectQueueSocket(queueId: string): void {
     this.stopQueueSocket();
     this.queueSocket = new QueueSocket(queueId, (event: QueueEventEnvelope): void => {
+      // 创新点 4：队列 ID 与单调 sequence 双重校验，拒绝旧连接残留事件和乱序推送造成状态倒退。
       if (this.queue === null || event.data.queue.id !== this.queue.id ||
         !shouldAcceptQueueEvent(this.queue.sequence, event.data.queue.sequence, event.type)) {
         return;
@@ -380,6 +381,7 @@ export struct ExperienceBookingView {
       }
       if (event.type === 'itinerary.replan_available') {
         const appStore: AppStore = AppStore.getInstance();
+        // 创新点 4：联动建议必须同时命中当前行程 ID 和 revision，避免将排队变化套用到已刷新的行程。
         if (appStore.hasCurrentItinerary() && isCurrentItinerarySuggestion(
           appStore.getCurrentItineraryId(), appStore.getCurrentItineraryRevision(),
           event.data.itinerary_id, event.data.itinerary_revision)) {
@@ -474,6 +476,7 @@ export struct ExperienceBookingView {
       this.onTripTap();
       return;
     }
+    // 创新点 4：用户点击时再次校验 revision，覆盖“提示出现后行程又被其他入口更新”的竞态窗口。
     if (!this.replanAvailable || !isCurrentItinerarySuggestion(
       appStore.getCurrentItineraryId(), appStore.getCurrentItineraryRevision(),
       this.suggestedItineraryId, this.suggestedItineraryRevision)) {

@@ -52,6 +52,7 @@ export struct AccessibilityView {
   }
 
   private visibleFacilities(): FacilityItem[] {
+    // 创新点 6：设施类别与轮椅/推车偏好共同过滤，让持久化偏好真正参与便民信息筛选。
     const result: FacilityItem[] = [];
     for (let index: number = 0; index < this.facilities.length; index++) {
       const item: FacilityItem = this.facilities[index];
@@ -64,6 +65,7 @@ export struct AccessibilityView {
   }
 
   private updateLargeText(value: boolean): void {
+    // 创新点 6：视觉设置写入统一 Store 后再通知页面容器，当前界面即时响应且重启后仍可恢复。
     this.largeText = value;
     AccessibilityStore.getInstance().setLargeText(value);
     this.onVisualChanged(this.largeText, this.highContrast);

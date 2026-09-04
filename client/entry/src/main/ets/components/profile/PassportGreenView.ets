@@ -33,6 +33,7 @@ export struct PassportGreenView {
   @State isWide: boolean = false;
   private service: JourneyService = new JourneyService();
   private shopService: ShopService = new ShopService();
+  // 创新点 8：同一打卡/任务在可重试失败期间复用幂等键，配合服务端不可变积分流水防止重复入账。
   private checkInPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private taskPending: PendingIdempotentOperation = new PendingIdempotentOperation();
 
@@ -75,6 +76,7 @@ export struct PassportGreenView {
     if (this.selectedTaskId.length === 0 && this.tasks.length > 0) {
       this.selectedTaskId = this.tasks[0].id;
     }
+    // 护照、绿色任务与商城读取同一积分账户，完成操作后整体刷新以展示一致余额。
     const accountResult: NetworkResult<PointsAccount> = await this.shopService.getPointsAccount();
     if (accountResult.successful && accountResult.data !== null) {
       this.pointsAccount = accountResult.data;
@@ -92,6 +94,7 @@ export struct PassportGreenView {
 
   private async checkIn(value: PassportStamp): Promise<void> {
     if (value.collected || this.operationBusy) { return; }
+    // 创新点 8：文化打卡必须在线交给 Provider 验证，不进入可自动重放的通用离线队列。
     if (NetworkStore.getInstance().isOffline()) {
       this.contentState = ContentState.OFFLINE;
       this.operationMessage = '打卡需由服务端验证，未加入通用离线重放队列';
@@ -118,6 +121,7 @@ export struct PassportGreenView {
   private async completeTask(): Promise<void> {
     const task: GreenTask | null = this.selectedTask();
     if (task === null || task.completed || this.operationBusy) { return; }
+    // 绿色凭证也保持在线验证边界，避免客户端离线自证后直接获得积分。
     if (NetworkStore.getInstance().isOffline()) {
       this.contentState = ContentState.OFFLINE;
       this.operationMessage = '绿色任务凭证需服务端验证，未加入通用离线重放队列';
@@ -229,6 +233,7 @@ export struct PassportGreenView {
         Text(this.operationMessage).width('100%').padding(9).fontSize(9).borderRadius(10)
           .fontColor($r('app.color.warning')).backgroundColor($r('app.color.surface_tint'))
       }
+    // 创新点 6：护照与绿色任务在宽屏并排、窄屏顺排，业务状态不随布局切换而重建。
     }.width('100%').onAreaChange((_oldArea: Area, newArea: Area) => {
       this.isWide = isWideWindow(Number(newArea.width));
     })

@@ -576,6 +576,8 @@ async def create_reservation_from_allocations(
         assert loaded is not None
         return loaded
 
+    # 创新点 4: 排队期间给出的体验或餐住建议只是候选方案; 真正落单时仍在用户级
+    # 时程锁内复核跨资源冲突与共享库存, 避免旧建议把已被占用的空档当成可预约承诺。
     await expire_reservation_holds(session)
     await session.commit()
     await acquire_user_schedule_lock(session, actor_id)

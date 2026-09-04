@@ -53,6 +53,8 @@ class RulesPlanner:
         walk_minutes: int,
         preferences: PlanningPreferences,
     ) -> ScoredAttraction:
+        # 创新点 1: 将兴趣、人流、距离、同行人群、体力和无障碍拆成可加总分项。
+        # 相同输入始终得到相同分数, 便于复现推荐结果并逐项解释排序原因。
         normalized_tags = {tag.lower() for tag in attraction.tags}
         normalized_tags.add(attraction.category.lower())
         interest_matches = len(preferences.interests & normalized_tags)
@@ -84,6 +86,7 @@ class RulesPlanner:
 
         accessibility_score = 0
         if preferences.accessible:
+            # 无障碍是安全硬约束; 不满足时使用压倒性负分, 不能被其他偏好加分抵消。
             accessibility_score = 20 if "wheelchair" in attraction.accessibility else -10_000
 
         breakdown = {
@@ -97,6 +100,7 @@ class RulesPlanner:
         }
         score = sum(breakdown.values())
         crowd_label = self._crowd_labels[crowd.crowd_level]
+        # 展示文案直接取自同一组分项, 保证总分、明细与用户可见解释保持一致。
         explanation = [
             f"兴趣匹配: {interest_matches} 项 ({interest_score:+d})",
             f"模拟人流: {crowd_label} ({crowd_score:+d})",

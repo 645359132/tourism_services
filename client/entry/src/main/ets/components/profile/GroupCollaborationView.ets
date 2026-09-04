@@ -77,6 +77,7 @@ export struct GroupCollaborationView {
     this.shareItinerary = value.share_itinerary;
     this.shareLocation = value.share_location;
     this.shareMemberStatus = value.share_member_status;
+    // 创新点 5：成员可见状态由服务端按“小队总开关 ∩ 成员个人开关”裁剪，客户端只投影获准字段。
     const currentUserId: string = AuthStore.getInstance().getUserId();
     for (let index: number = 0; index < value.members.length; index++) {
       const member: GroupMember = value.members[index];
@@ -165,6 +166,7 @@ export struct GroupCollaborationView {
       return;
     }
     this.operationBusy = true;
+    // 创新点 5：链接行程携带当前小队 revision，以乐观并发控制阻止多人同时编辑时的静默覆盖。
     const result: NetworkResult<TravelGroup> = await this.service.linkGroupItinerary(
       this.group.id, appStore.getCurrentItineraryId(), this.group.revision);
     this.operationBusy = false;
@@ -182,6 +184,7 @@ export struct GroupCollaborationView {
       return;
     }
     this.operationBusy = true;
+    // 创新点 5：小队级开关与成员自己的共享开关分层保存，位置默认关闭且不能被队友单方面开启。
     const result: NetworkResult<TravelGroup> = await this.service.updateGroupPrivacy(
       this.group.id, this.shareItinerary, this.shareLocation, this.shareMemberStatus);
     this.operationBusy = false;

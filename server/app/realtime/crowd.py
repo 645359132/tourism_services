@@ -46,6 +46,7 @@ class ConnectionHub:
 
     def register(self) -> tuple[str, asyncio.Queue[CrowdWebSocketEnvelope]]:
         connection_id = uuid4().hex
+        # 创新点 2: 人流看板只消费最新快照; 容量为 1 可防止慢连接积压过期序列。
         queue: asyncio.Queue[CrowdWebSocketEnvelope] = asyncio.Queue(maxsize=1)
         self._queues[connection_id] = queue
         return connection_id, queue
@@ -73,6 +74,7 @@ class ConnectionHub:
     async def _broadcast_local(self, envelope: CrowdWebSocketEnvelope) -> None:
         for queue in tuple(self._queues.values()):
             if queue.full():
+                # 用新值覆盖旧值, 保持“最新值”语义, 同时避免广播协程被单个客户端阻塞。
                 with suppress(asyncio.QueueEmpty):
                     queue.get_nowait()
             with suppress(asyncio.QueueFull):
@@ -83,6 +85,7 @@ class ConnectionHub:
             return
         try:
             decoded = json.loads(payload)
+            # Redis 会把消息回送给发布者; 按 origin 去重可避免同一 sequence 被本进程广播两次。
             if decoded.get("origin") == self.origin:
                 return
             envelope = CrowdWebSocketEnvelope.model_validate(decoded["data"])
@@ -123,6 +126,7 @@ class CrowdPublisher:
         if backend is None or not backend.distributed:
             return True
         try:
+            # 多 worker 每个周期只允许一个发布者推进持久化 sequence, 维持全局单调更新流。
             decision = await backend.rate_limit(
                 key="publisher:crowd",
                 limit=1,
@@ -140,6 +144,7 @@ class CrowdPublisher:
             return None
         factory = self.session_factory_provider()
         async with factory() as session:
+            # 先持久化递增序列再推送, 重连读取与 WebSocket 增量可共享同一版本基准。
             response = await simulate_crowd_tick(session)
         envelope = crowd_envelope(response)
         await self.hub.broadcast(envelope)

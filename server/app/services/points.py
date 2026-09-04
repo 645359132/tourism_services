@@ -93,6 +93,8 @@ async def award_points(
 ) -> PointLedgerEntry:
     if points <= 0:
         raise ValueError("Award points must be positive")
+    # 创新点 8: 账户余额是并发更新的物化结果, 流水则只追加不回写;
+    # source_type + source_id 将同一业务奖励映射到唯一入账事实, 重试不会重复加分。
     await _lock_point_account(session, user_id)
     existing = await session.scalar(
         select(PointLedgerEntry).where(
@@ -325,6 +327,7 @@ async def redeem_reward(
         request_hash=request_hash,
     )
     session.add(redemption)
+    # 创新点 8: 兑换以负数流水追加支出并记录 balance_after, 历史账目保持不可变且可追溯。
     session.add(
         PointLedgerEntry(
             user_id=actor_id,

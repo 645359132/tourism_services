@@ -60,6 +60,7 @@ class SchematicMapProvider:
 
         edges = list(await session.scalars(select(RouteEdge)))
         adjacency: dict[UUID, list[tuple[UUID, RouteEdge]]] = {node_id: [] for node_id in nodes}
+        # 创新点 2: 先按通行条件裁剪示意图, 再计算最短路, 确保结果中的每条边都满足约束。
         for edge in edges:
             if wheelchair and not edge.wheelchair_ok:
                 continue
@@ -73,6 +74,7 @@ class SchematicMapProvider:
             if edge.bidirectional:
                 adjacency[edge.to_node_id].append((edge.from_node_id, edge))
 
+        # 以“分钟、米数”为字典序成本, 并用节点 UUID 稳定打破平局; 同一输入可重复得到同一路线。
         distances: dict[UUID, tuple[int, int]] = {from_node_id: (0, 0)}
         previous: dict[UUID, tuple[UUID, RouteEdge]] = {}
         queue: list[tuple[int, int, str, UUID]] = [(0, 0, str(from_node_id), from_node_id)]

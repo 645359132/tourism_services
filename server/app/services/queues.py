@@ -255,6 +255,8 @@ def queue_envelope(
     *,
     event_type: str = "queue.updated",
 ) -> QueueWebSocketEnvelope:
+    # 创新点 4: 队列事件只携带生成建议时看到的行程版本, 不直接改写行程;
+    # 客户端应用建议前必须核对 itinerary_revision, 从而拒绝覆盖新行程的旧建议。
     recommendation = response.nearby_recommendations[0] if response.nearby_recommendations else None
     selected_type = event_type
     if event_type == "queue.updated" and response.itinerary_id and recommendation:

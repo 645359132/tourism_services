@@ -374,6 +374,8 @@ async def list_facilities(
     kind: str | None = None,
     accessible_only: bool = False,
 ) -> list[FacilityResponse]:
+    # 创新点 6: 服务端只提供可核验的设施属性筛选; 大字、高对比等适老偏好由客户端持久化。
+    # accessible_only 不等同于实时可用承诺, 来源和演示标记仍随响应返回, 推车能力也单独披露。
     statement = select(FacilityPOI).order_by(FacilityPOI.code)
     if kind is not None:
         statement = statement.where(FacilityPOI.category == kind)

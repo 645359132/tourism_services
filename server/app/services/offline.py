@@ -63,6 +63,8 @@ def encode_cursor(
     cursor: int,
     settings: Settings,
 ) -> str:
+    # 创新点 7: 同步游标不仅是分页数字, 还签名绑定用户、设备和协议版本;
+    # 因此游标不可篡改, 也不能跨账号或跨设备复用。
     payload = json.dumps(
         {
             "cursor": cursor,
@@ -295,6 +297,8 @@ async def _server_cursor(session: AsyncSession, user_id: UUID) -> int:
 
 
 def _validate_mutation(mutation: OfflineMutationRequest) -> None:
+    # 创新点 7: 离线 outbox 采用显式白名单, 仅允许便签和“已读/已查看”类低风险操作;
+    # 预约、支付、SOS、护照打卡等需要在线核验的动作不会通过通用同步通道执行。
     payload = mutation.payload
     if mutation.operation == "DELETE":
         if mutation.entity_type != "NOTE":
@@ -510,6 +514,7 @@ async def push_mutations(
     accepted = 0
     replayed = 0
     last_version = state.last_client_version
+    # 创新点 7: mutation ID + 请求摘要保证重试可重放, 单调 client_version 防止乱序旧写覆盖新状态。
     for mutation in mutations:
         _validate_mutation(mutation)
         request_hash = _hash_payload(mutation.model_dump(mode="json"))

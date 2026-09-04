@@ -202,6 +202,7 @@ export struct TripPage {
         '行程版本已变化，请刷新后重试' : this.errorText(result.error);
       return;
     }
+    // 创新点 3：服务端负责重排，客户端仍二次验收版本递增及锁定预约不被移动，避免旧响应覆盖承诺行程。
     const assessment: ReplanAssessment = assessReplan(previous, result.data);
     if (!assessment.accepted) {
       this.contentState = ContentState.ERROR;
@@ -280,6 +281,7 @@ export struct TripPage {
           `模拟人流：${itineraryCrowdLabel(item.crowd_level)}`)
           .fontSize(11)
           .fontColor($r('app.color.text_secondary'))
+        // 创新点 1：展示层兼容历史英文评分说明，旧缓存无需迁移也能与新中文响应一致呈现。
         Text(localizeItineraryTexts(item.explanation).join(' · '))
           .fontSize(11)
           .fontColor($r('app.color.primary'))

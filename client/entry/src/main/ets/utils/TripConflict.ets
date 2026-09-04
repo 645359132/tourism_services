@@ -17,6 +17,7 @@ export function isValidTripRange(item: TripPlanItem): boolean {
 }
 
 export function findTripConflict(items: TripPlanItem[]): TripConflictResult {
+  // 创新点 3：在副本上按开始时间排序，既不改变页面原顺序，又能用相邻区间一次扫描发现时间重叠。
   const ordered: TripPlanItem[] = items.slice();
   ordered.sort((left: TripPlanItem, right: TripPlanItem): number => left.startAt.localeCompare(right.startAt));
   for (let index: number = 0; index < ordered.length - 1; index++) {

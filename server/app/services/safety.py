@@ -106,6 +106,8 @@ async def list_emergency_bulletins(
 
 
 def sos_response(sos: SosRequest) -> SosResponse:
+    # 创新点 7: SOS 记录始终同时返回演示 Provider、real_dispatch=False 和免责声明,
+    # 明确区分“已在系统中留痕”与“已联系真实救援”, 避免给游客造成已派单的错觉。
     return SosResponse(
         id=str(sos.id),
         sos_no=sos.sos_no,
@@ -173,6 +175,7 @@ async def create_sos(
         message=normalized_message,
         idempotency_key=idempotency_key,
     )
+    # 创新点 7: 即使替换 Provider, 服务层也拒绝任何声称触发现实救援的结果, 守住 MVP 安全边界。
     if dispatched.dispatched_real_services:
         raise RuntimeError("Demo provider must never dispatch real services")
     sos_id = uuid4()

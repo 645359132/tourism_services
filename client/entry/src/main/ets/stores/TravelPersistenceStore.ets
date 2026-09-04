@@ -12,6 +12,7 @@ import {
 } from '../models/PersistenceModels';
 
 export class TravelPersistenceStore {
+  // 创新点 7：离线数据集中落入 Preferences，但所有业务缓存仍按用户封装，防止账号切换后串读。
   private static instance: TravelPersistenceStore = new TravelPersistenceStore();
   private preferenceStore: preferences.Preferences | null = null;
 
@@ -34,6 +35,7 @@ export class TravelPersistenceStore {
 
   saveOfflineProfile(userId: string, displayName: string): void {
     if (userId.length === 0) { return; }
+    // 冷启动只保存最小身份提示信息；访问令牌和可直接核验的动态二维码不会写入该持久层。
     const profile: OfflineProfile = new OfflineProfile();
     profile.user_id = userId;
     profile.display_name = displayName;
@@ -142,6 +144,7 @@ export class TravelPersistenceStore {
   }
 
   private writeOwnedJson(key: string, userId: string, payload: string): void {
+    // 创新点 7：存储键和数据信封都绑定 userId；读取时再次验主，形成跨账号重放的双重边界。
     const envelope: string = createOwnedCacheEnvelope(userId, payload);
     if (envelope.length === 0) { return; }
     this.writeString(this.ownedKey(key, userId), envelope);

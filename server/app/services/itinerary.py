@@ -65,6 +65,7 @@ def _overlaps(
 ) -> bool:
     """Half-open interval overlap: touching endpoints are not a conflict."""
 
+    # 创新点 3: 统一采用 [start, end) 半开区间, 前一项目结束即后一项目开始时不误报冲突。
     return first_start < second_end and second_start < first_end
 
 
@@ -161,6 +162,7 @@ async def _ticket_commitments(
                     ).astimezone(UTC),
                 )
             )
+    # 已支付门票属于不可移动承诺; 稳定排序后先校验承诺自身, 避免生成无法兑现的行程。
     commitments.sort(key=lambda commitment: (commitment.start_at, str(commitment.order_id)))
     for previous, current in pairwise(commitments):
         if _overlaps(
@@ -229,6 +231,7 @@ async def _scored_candidates(
                 preferences=preferences,
             )
         )
+    # 创新点 1: 分数降序、景点代码兜底, 相同数据下候选顺序稳定且可复验。
     scored.sort(key=lambda item: (-item.score, item.attraction.code))
     return scored, node_by_attraction, excluded
 
@@ -241,6 +244,7 @@ def _find_start(
     commitments: list[Commitment],
     plan_end: datetime,
 ) -> tuple[datetime, datetime] | None:
+    # 将步行和缓冲计入游览区间; 遇到锁定承诺时整体后移, 而不是改动承诺本身。
     transition = walk_minutes + DEFAULT_WALKING_BUFFER_MINUTES
     start_at = cursor + timedelta(minutes=transition)
     while True:
@@ -323,6 +327,7 @@ async def generate_itinerary(
         unscheduled_reasons=[],
     )
 
+    # 创新点 3: 把已付款门票投影为 locked 项, 后续景点只能绕开, 不能自动移动或删除。
     for commitment in commitments:
         itinerary.items.append(
             ItineraryItem(
@@ -410,6 +415,7 @@ async def generate_itinerary(
         cursor = end_at
         current_node = destination
 
+    # 最终序号由稳定时间轴生成, 避免数据库返回顺序影响客户端呈现与冲突检查。
     itinerary.items.sort(key=lambda item: (_aware(item.start_at), item.kind, str(item.ref_id)))
     for ordinal, item in enumerate(itinerary.items, start=1):
         item.ordinal = ordinal
@@ -463,6 +469,7 @@ async def check_itinerary_conflicts(
         visit_date=itinerary.visit_date,
     )
     represented_commitments = {item.ref_id for item in items if item.kind == "COMMITMENT"}
+    # 行程生成后新购买的门票尚未投影为项目, 也必须与已有景点再次核对。
     for commitment in current_commitments:
         if commitment.order_id in represented_commitments:
             continue
@@ -497,6 +504,8 @@ async def check_itinerary_conflicts(
                     + (item_end - item_start),
                 )
             )
+    # 创新点 3: 沿排序后的时间轴同时检查重叠、路线可达性和步行缓冲;
+    # locked 只决定“建议移动谁”, 不会让冲突被静默忽略。
     for previous, current in pairwise(items):
         previous_start = _aware(previous.start_at)
         previous_end = _aware(previous.end_at)
@@ -661,9 +670,11 @@ async def replan_itinerary(
     payload: ReplanItineraryRequest,
 ) -> Itinerary:
     itinerary = await _owned_itinerary(session, itinerary_id=itinerary_id, user=user)
+    # expected_revision 是乐观并发令牌, 先快速拒绝基于旧页面发起的重排。
     if itinerary.revision != payload.expected_revision:
         raise _error(409, "REVISION_CONFLICT", "行程版本已发生变化")
     _, crowds = await latest_crowd_by_attraction(session)
+    # 锁定项目不进入候选集合, 其原时间段稍后作为硬约束参与排程。
     unlocked_slots = sorted(
         [
             item
@@ -696,6 +707,7 @@ async def replan_itinerary(
         for item in unlocked_slots
     ]
     if payload.crowd_avoidance:
+        # 创新点 2: 基于最新持久化人流快照重排, 并用景点代码保证同级人流下顺序确定。
         level_order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
         candidates.sort(
             key=lambda candidate: (
@@ -731,6 +743,7 @@ async def replan_itinerary(
         accessible=itinerary.accessible,
         crowd_avoidance=payload.crowd_avoidance,
     )
+    # 先在内存中完整求解, 全部可行后再统一写回, 避免半条行程已经变更的中间状态。
     planned_updates: list[
         tuple[
             ItineraryItem,
@@ -822,6 +835,7 @@ async def replan_itinerary(
 
     next_revision = itinerary.revision + 1
     total_score = sum(update_data[7] for update_data in planned_updates)
+    # 创新点 3: 写入时再次用 revision 做原子比较并递增, 封住校验后到提交前的并发窗口。
     transitioned = await session.execute(
         update(Itinerary)
         .execution_options(synchronize_session=False)
@@ -865,6 +879,7 @@ async def replan_itinerary(
         item.crowd_level = crowd.crowd_level
         item.walk_minutes = walk_minutes
         item.explanation = explanation
+    # 记录本次采用的人流 sequence, 使每次自动重排都能追溯到确定的快照版本。
     session.add(
         PlanRun(
             itinerary_id=itinerary.id,

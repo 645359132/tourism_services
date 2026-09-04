@@ -10,6 +10,7 @@ export class AccessibilitySettings {
 }
 
 export class AccessibilityStore {
+  // 创新点 6：全局单例统一承载视觉与出行偏好，避免各页面各自保存而产生不一致。
   private static instance: AccessibilityStore = new AccessibilityStore();
   private preferenceStore: preferences.Preferences | null = null;
   private settings: AccessibilitySettings = new AccessibilitySettings();
@@ -22,6 +23,7 @@ export class AccessibilityStore {
     try {
       const options: preferences.Options = { name: 'smart_tourism_accessibility' };
       this.preferenceStore = preferences.getPreferencesSync(context, options);
+      // 启动时同步恢复偏好，使首屏即可使用上次的大字、高对比和无障碍选择。
       this.settings.largeText = this.readBoolean('large_text');
       this.settings.highContrast = this.readBoolean('high_contrast');
       this.settings.voiceAssist = this.readBoolean('voice_assist');
@@ -33,6 +35,7 @@ export class AccessibilityStore {
   }
 
   getSettings(): AccessibilitySettings {
+    // 返回快照而不是内部对象，调用方只能通过 setter 修改，从而不会绕过 Preferences 持久化。
     const copy: AccessibilitySettings = new AccessibilitySettings();
     copy.largeText = this.settings.largeText;
     copy.highContrast = this.settings.highContrast;

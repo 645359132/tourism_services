@@ -130,6 +130,7 @@ export struct GuidePage {
   }
 
   private acceptCrowdSnapshot(snapshot: CrowdResponse): void {
+    // 创新点 2：REST 与 WebSocket 共用单调序列门禁，迟到或重复快照不能把界面人流回滚到旧状态。
     if (!shouldAcceptCrowdSequence(this.crowdSequence, snapshot.sequence)) {
       return;
     }
@@ -231,6 +232,7 @@ export struct GuidePage {
   }
 
   private invalidateRoute(message: string): void {
+    // 创新点 2：起终点变化时同时作废请求版本和旧高亮，保证屏幕只表达当前选择对应的路线。
     this.routeRequestVersion += 1;
     this.routePlan = null;
     this.routeMessage = message;
@@ -254,6 +256,7 @@ export struct GuidePage {
     this.routePlan = null;
     this.routeMessage = '正在计算示意路线…';
     const result: NetworkResult<RoutePlanResponse> = await this.service.planRoute(originNodeId, targetNodeId);
+    // 创新点 2：网络返回顺序不可控，只允许仍匹配当前请求版本的结果更新路线状态。
     if (requestVersion !== this.routeRequestVersion) {
       return;
     }
@@ -280,6 +283,7 @@ export struct GuidePage {
             this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
               this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') :
                 $r('app.color.success'))
+        // 创新点 2：路径节点同步显示顺序徽标和高亮边框，让规划结果在示意地图上形成连续视觉反馈。
         if (this.routeStepLabel(node.id).length > 0) {
           Text(this.routeStepLabel(node.id))
             .width(22)

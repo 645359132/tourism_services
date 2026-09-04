@@ -176,6 +176,8 @@ async def check_in_stamp(
     actor_id = user.id
     normalized_code = stamp_code.strip().lower()
     request_hash = _hash_payload({"stamp_code": normalized_code})
+    # 创新点 8: 幂等键处理同一次打卡的网络重试, 用户与印章定义的唯一约束阻止换键重复领奖;
+    # 对“不同键但同一印章”的拒绝也留存回执, 使后续重试得到一致结果。
     existing_by_key = await session.scalar(
         select(PassportStamp).where(
             PassportStamp.user_id == actor_id,
@@ -239,6 +241,7 @@ async def check_in_stamp(
         raise _error(409, "CHECK_IN_NOT_VERIFIED", "Demo check-in was not verified")
     stamp_id = uuid4()
     try:
+        # 创新点 8: 印章记录与积分入账共用一个事务, 避免出现只打卡未加分或只加分未打卡。
         await award_points(
             session,
             user_id=actor_id,
