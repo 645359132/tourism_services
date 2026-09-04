@@ -872,7 +872,24 @@ def test_order_pagination_filters_owner_before_limit(
     ticketing_harness: TicketingHarness,
 ) -> None:
     first_token = _login(ticketing_harness.client, "tourist_demo")["access_token"]
-    second_token = _login(ticketing_harness.client, "tourist_two")["access_token"]
+
+    async def create_pagination_owner() -> None:
+        async with ticketing_harness.session_factory() as session:
+            tourist_role = await session.scalar(select(Role).where(Role.name == "tourist"))
+            assert tourist_role is not None
+            owner = User(
+                username="pagination_tourist",
+                display_name="Pagination Tourist",
+                password_hash=hash_password(DEMO_PASSWORD),
+                is_active=True,
+            )
+            session.add(owner)
+            await session.flush()
+            session.add(UserRole(user_id=owner.id, role_id=tourist_role.id))
+            await session.commit()
+
+    asyncio.run(create_pagination_owner())
+    second_token = _login(ticketing_harness.client, "pagination_tourist")["access_token"]
 
     async def create_slot() -> UUID:
         async with ticketing_harness.session_factory() as session:
