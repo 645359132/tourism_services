@@ -275,7 +275,7 @@ def test_rules_planner_is_deterministic_and_owned(guide_harness: GuideHarness) -
     assert [item["ref_id"] for item in first.json()["items"]] == [
         item["ref_id"] for item in second.json()["items"]
     ]
-    assert any("no AI provider" in line for line in first.json()["explanation"])
+    assert any("未连接外部智能规划服务" in line for line in first.json()["explanation"])
 
     hidden = guide_harness.client.get(
         f"/api/v1/itineraries/{first.json()['id']}",

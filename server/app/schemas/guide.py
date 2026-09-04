@@ -53,7 +53,7 @@ class MapProviderResponse(BaseModel):
     name: str = "schematic"
     mode: str = "schematic"
     is_demo: bool = True
-    description: str = "Connected local schematic graph; no live map provider"
+    description: str = "使用本地示意图, 未接入实时地图服务"
 
 
 class MapNodeResponse(BaseModel):
@@ -114,7 +114,7 @@ class RoutePlanRequest(BaseModel):
 class RouteProviderResponse(BaseModel):
     mode: str = "schematic"
     is_demo: bool = True
-    description: str = "Connected local schematic graph; no live map provider"
+    description: str = "使用本地示意图, 未接入实时地图服务"
 
 
 class RoutePlanResponse(BaseModel):

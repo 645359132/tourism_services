@@ -187,7 +187,7 @@ def test_rules_planner_applies_accessibility_and_low_fitness_penalties() -> None
         "accessibility": 20,
     }
     assert scored.score == 77
-    assert scored.explanation[-1] == "Wheelchair accessibility (+20)"
+    assert scored.explanation[-1] == "轮椅无障碍适配 (+20)"
 
     inaccessible = RulesPlanner().score_candidate(
         attraction=_attraction(tags=["restful"]),
@@ -282,7 +282,7 @@ async def test_schematic_map_rejects_missing_inaccessible_and_filtered_paths() -
     origin = _route_node("origin")
     destination = _route_node("destination")
 
-    with pytest.raises(NoSchematicRouteError, match="endpoint is missing"):
+    with pytest.raises(NoSchematicRouteError, match="起点或终点不在"):
         await provider.route(
             _session_with([origin]),
             from_node_id=origin.id,
@@ -292,7 +292,7 @@ async def test_schematic_map_rejects_missing_inaccessible_and_filtered_paths() -
         )
 
     inaccessible = _route_node("stairs", accessible=False)
-    with pytest.raises(NoSchematicRouteError, match="not accessible"):
+    with pytest.raises(NoSchematicRouteError, match="无法通行路线起点或终点"):
         await provider.route(
             _session_with([origin, inaccessible]),
             from_node_id=origin.id,
@@ -302,7 +302,7 @@ async def test_schematic_map_rejects_missing_inaccessible_and_filtered_paths() -
         )
 
     blocked_edge = _route_edge(origin, destination, stroller_ok=False)
-    with pytest.raises(NoSchematicRouteError, match="No route"):
+    with pytest.raises(NoSchematicRouteError, match="没有符合无障碍要求"):
         await provider.route(
             _session_with([origin, destination], [blocked_edge]),
             from_node_id=origin.id,
@@ -328,9 +328,9 @@ async def test_schematic_map_respects_one_way_accessible_edges() -> None:
     )
     assert route.node_ids == [origin.id, destination.id]
     assert route.edge_ids == [edge.id]
-    assert route.explanation[-1] == "Applied: wheelchair-safe edges, stroller-safe edges"
+    assert route.explanation[-1] == "已应用: 轮椅可通行路段、婴儿车可通行路段"
 
-    with pytest.raises(NoSchematicRouteError, match="No route"):
+    with pytest.raises(NoSchematicRouteError, match="没有符合无障碍要求"):
         await provider.route(
             _session_with([origin, destination], [edge]),
             from_node_id=destination.id,

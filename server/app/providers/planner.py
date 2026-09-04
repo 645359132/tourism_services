@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from app.db.models.guide import Attraction, CrowdSnapshot
 
@@ -38,6 +38,12 @@ class RulesPlanner:
 
     source = "rules"
     is_demo = True
+
+    _crowd_labels: ClassVar[dict[str, str]] = {
+        "LOW": "较少",
+        "MEDIUM": "适中",
+        "HIGH": "拥挤",
+    }
 
     def score_candidate(
         self,
@@ -90,15 +96,16 @@ class RulesPlanner:
             "accessibility": accessibility_score,
         }
         score = sum(breakdown.values())
+        crowd_label = self._crowd_labels[crowd.crowd_level]
         explanation = [
-            f"Interest matches: {interest_matches} ({interest_score:+d})",
-            f"Simulated crowd {crowd.crowd_level} ({crowd_score:+d})",
-            f"Schematic walk {walk_minutes} min ({distance_score:+d})",
-            f"Companion fit ({companion_score:+d})",
-            f"Fitness fit ({fitness_score:+d})",
+            f"兴趣匹配: {interest_matches} 项 ({interest_score:+d})",
+            f"模拟人流: {crowd_label} ({crowd_score:+d})",
+            f"示意步行: {walk_minutes} 分钟 ({distance_score:+d})",
+            f"同行人群适配 ({companion_score:+d})",
+            f"体力适配 ({fitness_score:+d})",
         ]
         if preferences.accessible:
-            explanation.append(f"Wheelchair accessibility ({accessibility_score:+d})")
+            explanation.append(f"轮椅无障碍适配 ({accessibility_score:+d})")
         return ScoredAttraction(
             attraction=attraction,
             crowd=crowd,

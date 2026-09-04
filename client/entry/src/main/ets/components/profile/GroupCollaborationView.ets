@@ -148,7 +148,7 @@ export struct GroupCollaborationView {
     this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.applyGroup(result.data);
-      this.operationMessage = `协作状态已刷新至 revision ${result.data.revision}`;
+      this.operationMessage = `协作状态已刷新至版本 ${result.data.revision}`;
     } else {
       this.contentState = this.stateForError(result.error);
       this.operationMessage = this.errorText(result.error);
@@ -170,7 +170,7 @@ export struct GroupCollaborationView {
     this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.applyGroup(result.data);
-      this.operationMessage = `共享行程已链接，协作 revision ${result.data.revision}`;
+      this.operationMessage = `共享行程已链接，协作版本 ${result.data.revision}`;
     } else {
       this.operationMessage = result.error !== null && result.error.statusCode === 409 ?
         '小队版本已变化，请刷新后重试' : this.errorText(result.error);
@@ -300,13 +300,13 @@ export struct GroupCollaborationView {
         Row() {
           Column({ space: 3 }) {
             Text(this.group.name).fontSize(17).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
-            Text(`邀请码 ${this.group.invite_code} · revision ${this.group.revision}`).fontSize(9)
+            Text(`邀请码 ${this.group.invite_code} · 版本 ${this.group.revision}`).fontSize(9)
               .fontColor($r('app.color.text_secondary'))
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Button('刷新').enabled(!this.operationBusy).fontSize(10).onClick(() => { this.refreshGroup(); })
         }.width('100%')
         Column({ space: 6 }) {
-          Text(`共享行程：${this.group.itinerary_id ?? '尚未链接'} · 行程 revision ` +
+          Text(`共享行程：${this.group.itinerary_id ?? '尚未链接'} · 行程版本 ` +
             `${this.group.itinerary_revision ?? 0}`).width('100%').fontSize(10).fontColor($r('app.color.primary'))
           Button('链接当前行程').enabled(!this.operationBusy).width('100%').fontColor(Color.White)
             .backgroundColor($r('app.color.primary')).onClick(() => { this.linkCurrentItinerary(); })

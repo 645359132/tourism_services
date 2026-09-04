@@ -9,7 +9,7 @@
 | 检查 | 结果 | 证据 |
 |---|---|---|
 | OHPM 依赖与锁文件可移植性 | 通过 | `ohpm install` 退出码 0；`oh-package-lock.json5` 只包含 `@ohos/hypium@1.0.25` 的公开 OHPM 地址、版本和完整性摘要，不含盘符、用户目录或本地 `file:` 依赖。 |
-| Hypium 本地业务规则 | 通过 | Hvigor `test` 构建成功；40 个用例全部通过，Failure 0、Error 0，包含注册字段和重复用户名错误映射。 |
+| Hypium 本地业务规则 | 通过 | Hvigor `test` 构建成功；41 个用例全部通过，Failure 0、Error 0，包含注册字段、重复用户名错误映射及历史英文行程的中文展示兼容。 |
 | `ohosTest` 业务 smoke 编译 | 通过 | `entry@ohosTest` HAP 构建成功；4 个用例覆盖游客注册输入、购票状态流、离线/应急安全和 719/720vp 响应式边界。 |
 | debug HAP | 通过 | `entry@default` HAP 构建成功；CLI 产物未签名，供编译验收使用。 |
 | DevEco Code Linter | 支持的规则门禁通过 | 配置改为本机支持的 TypeScript 与 security recommended 规则；CLI 以 0 退出并输出 `No defects found`，引擎日志确认 ESLint 实际执行且 Errors/Warns/Suggestions 均为 0。附带的 `arkPerfCheck` 仍会在 6 个大型 ArkUI 文件上触发其内部 `getDeclaringMethod` 异常，因此不把该扩展的覆盖范围虚报为完整。 |

@@ -21,6 +21,12 @@ import {
   TimelineConflictDisplay,
   assessReplan,
   findTimelineConflict,
+  itineraryActionLabel,
+  itineraryCrowdLabel,
+  itineraryKindLabel,
+  itinerarySeverityLabel,
+  localizeItineraryText,
+  localizeItineraryTexts,
   validateItineraryGenerateInput
 } from '../utils/GuideRules';
 
@@ -143,7 +149,7 @@ export struct TripPage {
     this.conflictResult = null;
     this.contentState = result.data.items.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
     this.requireLogin = false;
-    this.operationMessage = '规则行程已生成；未调用外部 AI 模型';
+    this.operationMessage = '规则行程已生成；未调用外部智能模型';
   }
 
   private async refreshItinerary(): Promise<void> {
@@ -157,7 +163,7 @@ export struct TripPage {
       this.itinerary = result.data;
       this.syncCurrentItinerary(result.data);
       this.contentState = result.data.items.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
-      this.operationMessage = `已刷新到 revision ${result.data.revision}`;
+      this.operationMessage = `已刷新到版本 ${result.data.revision}`;
     } else {
       this.contentState = this.stateForError(result.error);
       this.operationMessage = this.errorText(result.error);
@@ -270,10 +276,11 @@ export struct TripPage {
           }
         }
         .width('100%')
-        Text(`${item.kind} · 步行 ${item.walk_minutes} 分钟 · 模拟人流 ${item.crowd_level}`)
+        Text(`${itineraryKindLabel(item.kind)} · 步行 ${item.walk_minutes} 分钟 · ` +
+          `模拟人流：${itineraryCrowdLabel(item.crowd_level)}`)
           .fontSize(11)
           .fontColor($r('app.color.text_secondary'))
-        Text(item.explanation.join(' · '))
+        Text(localizeItineraryTexts(item.explanation).join(' · '))
           .fontSize(11)
           .fontColor($r('app.color.primary'))
           .maxLines(2)
@@ -298,7 +305,7 @@ export struct TripPage {
                 .fontSize(22)
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
-              Text('source=rules · 无模型密钥时使用可解释评分，不虚称 AI 模型')
+              Text('本地规则引擎 · 使用可解释评分，未连接外部智能模型')
                 .fontSize(11)
                 .fontColor($r('app.color.warning'))
             }
@@ -435,8 +442,8 @@ export struct TripPage {
                 .fontSize(20)
                 .fontWeight(FontWeight.Bold)
                 .fontColor($r('app.color.text_primary'))
-              Text(`${this.itinerary.visit_date} · revision ${this.itinerary.revision} · ` +
-                `score ${this.itinerary.total_score}`)
+              Text(`${this.itinerary.visit_date} · 版本 ${this.itinerary.revision} · ` +
+                `评分 ${this.itinerary.total_score}`)
                 .fontSize(11)
                 .fontColor($r('app.color.text_secondary'))
             }
@@ -448,7 +455,7 @@ export struct TripPage {
           }
           .width('100%')
 
-          Text(this.itinerary.explanation.join(' · '))
+          Text(localizeItineraryTexts(this.itinerary.explanation).join(' · '))
             .width('100%')
             .padding(12)
             .borderRadius(13)
@@ -457,7 +464,7 @@ export struct TripPage {
             .backgroundColor($r('app.color.surface_tint'))
 
           if (!this.itinerary.is_complete) {
-            Text(`未完全排入：${this.itinerary.unscheduled_reasons.join(' · ')}`)
+            Text(`未完全排入：${localizeItineraryTexts(this.itinerary.unscheduled_reasons).join(' · ')}`)
               .width('100%')
               .padding(12)
               .borderRadius(13)
@@ -495,7 +502,7 @@ export struct TripPage {
           }
           .width('100%')
 
-          Text('重排请求固定 preserve_locked=true；客户端还会拒绝移动锁定预约的响应。')
+          Text('重排时会保留锁定预约；客户端也会拒绝任何移动锁定预约的结果。')
             .width('100%')
             .fontSize(10)
             .fontColor($r('app.color.warning'))
@@ -508,13 +515,13 @@ export struct TripPage {
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.conflictResult.feasible ? $r('app.color.success') : $r('app.color.error'))
               ForEach(this.conflictResult.conflicts, (conflict: ItineraryConflict) => {
-                Text(`[${conflict.severity}] ${conflict.message}`)
+                Text(`[${itinerarySeverityLabel(conflict.severity)}] ${localizeItineraryText(conflict.message)}`)
                   .width('100%')
                   .fontSize(12)
                   .fontColor(conflict.severity === 'ERROR' ? $r('app.color.error') : $r('app.color.warning'))
               }, (conflict: ItineraryConflict) => `${conflict.code}:${conflict.item_ids.join(',')}`)
               ForEach(this.conflictResult.suggestions, (suggestion: ItinerarySuggestion) => {
-                Text(`建议 ${suggestion.action}：${suggestion.message}`)
+                Text(`建议${itineraryActionLabel(suggestion.action)}：${localizeItineraryText(suggestion.message)}`)
                   .width('100%')
                   .fontSize(11)
                   .fontColor($r('app.color.primary'))

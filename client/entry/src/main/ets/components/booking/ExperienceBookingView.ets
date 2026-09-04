@@ -488,7 +488,7 @@ export struct ExperienceBookingView {
       this.replanAvailable = false;
       this.suggestedItineraryId = '';
       this.suggestedItineraryRevision = -1;
-      this.operationMessage = `排队联动已应用，行程更新至 revision ${result.data.revision}`;
+      this.operationMessage = `排队联动已应用，行程更新至版本 ${result.data.revision}`;
     } else {
       this.operationMessage = this.errorText(result.error);
     }

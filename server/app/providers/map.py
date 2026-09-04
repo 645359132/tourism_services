@@ -31,7 +31,7 @@ class SchematicMapProvider:
 
     mode = "schematic"
     is_demo = True
-    description = "Connected local schematic graph; no live map provider"
+    description = "使用本地示意图, 未接入实时地图服务"
 
     async def route(
         self,
@@ -44,10 +44,10 @@ class SchematicMapProvider:
     ) -> SchematicRoute:
         nodes = {node.id: node for node in await session.scalars(select(RouteNode))}
         if from_node_id not in nodes or to_node_id not in nodes:
-            raise NoSchematicRouteError("Route endpoint is missing from the schematic graph")
+            raise NoSchematicRouteError("路线起点或终点不在本地示意图中")
         constrained = wheelchair or stroller
         if constrained and (not nodes[from_node_id].accessible or not nodes[to_node_id].accessible):
-            raise NoSchematicRouteError("Route endpoint is not accessible for the requested mode")
+            raise NoSchematicRouteError("所选出行方式无法通行路线起点或终点")
         if from_node_id == to_node_id:
             return SchematicRoute(
                 node_ids=[from_node_id],
@@ -55,7 +55,7 @@ class SchematicMapProvider:
                 distance_m=0,
                 walk_minutes=0,
                 accessible=True,
-                explanation=["Origin and destination are the same schematic node"],
+                explanation=["起点与终点为同一个示意节点"],
             )
 
         edges = list(await session.scalars(select(RouteEdge)))
@@ -93,7 +93,7 @@ class SchematicMapProvider:
                     heapq.heappush(queue, (*candidate, str(next_id), next_id))
 
         if to_node_id not in distances:
-            raise NoSchematicRouteError("No route satisfies the accessibility requirements")
+            raise NoSchematicRouteError("没有符合无障碍要求的可用路线")
 
         node_ids = [to_node_id]
         edge_ids: list[UUID] = []
@@ -108,12 +108,12 @@ class SchematicMapProvider:
         walk_minutes, distance_m = distances[to_node_id]
         filters = []
         if wheelchair:
-            filters.append("wheelchair-safe edges")
+            filters.append("轮椅可通行路段")
         if stroller:
-            filters.append("stroller-safe edges")
+            filters.append("婴儿车可通行路段")
         explanation = [
-            "Shortest deterministic path over the local schematic graph",
-            f"Applied: {', '.join(filters)}" if filters else "No accessibility edge filter",
+            "基于本地示意图计算的确定性最短路线",
+            f"已应用: {'、'.join(filters)}" if filters else "未应用无障碍路段筛选",
         ]
         return SchematicRoute(
             node_ids=node_ids,
