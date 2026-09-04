@@ -9,7 +9,7 @@
 
 ## 已接受证据总表
 
-本表记录 2026-09-04（Asia/Shanghai）的已接受结果；“待环境复验”不等同于通过。
+本表记录 2026-09-04（Asia/Shanghai）的已接受结果；以“待”开头的状态不等同于通过。
 
 | 边界 | 规范命令/证据 | 已接受结果 | 状态 |
 |---|---|---|---|
@@ -17,18 +17,18 @@
 | 空库迁移 | 对同一新库执行两次 `uv run alembic upgrade head` | 首次到 head，第二次无新增迁移 | 通过 |
 | 应用种子 | 对同一库执行两次 `uv run tourism-seed` | 首次 applied，第二次 already applied | 通过 |
 | Python lint | `uv run ruff check .` | 0 错误 | 通过 |
-| 服务端测试/覆盖率 | `uv run pytest`；配置内置 branch coverage 和 `fail_under=70` | 130 passed，覆盖率 72.65%，含 PostgreSQL 离线 DDL 门禁 | 通过 |
-| 真实网络 smoke | 独立 Uvicorn + `uv run tourism-smoke` | SQLite 与 Compose 均 46/46，含 3 条 WebSocket 契约 | 通过 |
+| 服务端测试/覆盖率 | `uv run pytest`；配置内置 branch coverage 和 `fail_under=70` | 146 passed，覆盖率 72.63%，含注册安全与 PostgreSQL 离线 DDL 门禁 | 通过 |
+| 真实网络 smoke | 独立服务 + `uv run tourism-smoke` | 当前 runner 49/49，含注册 3 项与 3 条 WebSocket 契约 | 通过 |
 | Locust 本机基线 | SHA-256 校验的 CSV 证据 | 320 请求、0 失败、11.42 req/s、aggregate p95 160 ms | 通过（仅本机基线） |
 | Compose 静态边界 | `docker compose config --quiet` | 退出码 0 | 通过 |
 | Compose 运行时 | API + PostgreSQL 16 + Redis 7，双 Uvicorn worker | 三个服务 healthy；空库到 `0007`、重复迁移/seed、drift、Redis PONG、health/docs 均通过 | 通过 |
 | Compose Locust | 独立的 SHA-256 校验 CSV | 5 users / 30 s；319 请求、0 失败、11.33 req/s、aggregate p95 130 ms | 通过（仅本机基线） |
 | OHPM 依赖与 lock | `ohpm install` 并检查 `client/oh-package-lock.json5` | 安装退出码 0；仅公开 `@ohos/hypium@1.0.25` 地址、版本和 integrity，无本机路径 | 通过 |
 | DevEco Code Linter | 本文给出的两个位置参数命令 | `No defects found`，Errors/Warns/Suggestions 均为 0 | 通过（支持的规则集） |
-| Hypium 本地测试 | `entry@default` Hvigor test | 37 passed，Failure 0，Error 0 | 通过 |
-| on-device 测试包 | `entry@ohosTest` debug HAP | 编译成功 | 通过（仅编译） |
+| Hypium 本地测试 | `entry@default` Hvigor test | 40 passed，Failure 0，Error 0 | 通过 |
+| on-device 测试包 | `entry@ohosTest` debug HAP | 4 个用例编译成功 | 通过（仅编译） |
 | 客户端应用包 | `entry@default` debug HAP | 编译成功，CLI 产物未签名 | 通过（仅编译） |
-| hdc/真机矩阵 | `hdc list targets` 及本文矩阵 | `[Empty]`；没有已签名 phone/tablet 目标 | 待环境复验 |
+| 模拟器/真机矩阵 | 在 DevEco Studio 运行 `entry@ohosTest` 与人工流程 | 执行结果由测试人员按本文矩阵记录 | 待人工复验 |
 | 仓库卫生 | 敏感签名、本机路径、忽略、diff、status、log 检查 | 已接受快照无待提交秘密或用户目录路径 | 通过；交付前重跑 |
 
 ## 1. 服务端：从锁文件到空数据库
@@ -77,11 +77,11 @@ uv run pytest
 - `alembic current` 应指向 head；第二次 upgrade 不创建另一套 schema。
 - 两次 seed 后业务目录、库存、演示账号与离线 manifest 不重复；第二次输出
   `Application seed already applied.`。
-- canonical `uv run pytest` 已通过 130 个测试，分支覆盖率 72.65%；`server/pyproject.toml` 自动追加
+- canonical `uv run pytest` 已通过 146 个测试，分支覆盖率 72.63%；`server/pyproject.toml` 自动追加
   strict config/markers、隔离 basetemp、`--cov=app` 和 missing-lines 报告，并对 branch
   coverage 施加 70% 下限。不要用省略 coverage addopts 的局部命令代替最终门禁。
 
-## 2. 真实 Uvicorn 的 46-check smoke
+## 2. 真实 Uvicorn 的 49-check smoke
 
 smoke 命令不导入 ASGI app，必须连接另一个进程中的真实监听器。继续使用上一节已迁移、
 已 seed 的数据库。在终端 A（`server/`）运行：
@@ -102,10 +102,11 @@ uv run tourism-smoke --base-url http://127.0.0.1:8765 --timeout 10
 接受输出为：
 
 ```text
-Real-network smoke passed (46 checks).
+Real-network smoke passed (49 checks).
 ```
 
-46 项覆盖 health、Swagger docs、capability metadata、登录、门票下单/支付/QR/核验窗口、
+49 项覆盖 health、Swagger docs、capability metadata、游客注册、注册后会话、重复用户名冲突、
+登录、门票下单/支付/QR/核验窗口、
 项目预约确认/取消、商城结算/支付、离线包/同步/SOS/护照/绿色任务，以及三条实时契约：
 crowd 初始帧和后续 tick、queue 初始帧/更新及一次性 ticket 拒绝、support 游客与演示
 bot 消息和 REST 持久化回读。完成后在终端 A 使用 Ctrl+C 正常停止监听器。
@@ -279,7 +280,8 @@ Set-Location ..
 接受结果：三个服务均 healthy 且 API restart count 为 0；PostgreSQL 从空库迁移到
 `20260901_0007 (head)`，共有 76 张业务表（另有 `alembic_version`），重复 upgrade
 无操作、`alembic check` 无 drift、重复 seed 输出 already applied；health/docs 为 200，
-Redis 返回 PONG，46-check smoke 通过。随后 5 users / 30 s 的 Compose Locust CSV
+Redis 返回 PONG。该组不可变 Locust CSV 关联的 preflight runner 为 46 checks；当前验收
+runner 独立通过 49 checks，其中包含 3 项注册检查。随后 5 users / 30 s 的 Compose Locust CSV
 记录 319 请求、0 失败、11.33 req/s、p95 130 ms、p99 350 ms、最大 367.80 ms；
 终端在 graceful shutdown 后为 324 请求、0 失败。原始文件与 SHA-256 见
 [`docs/performance/README.md`](../performance/README.md)。这些结果仍不是生产 SLO 或
@@ -336,28 +338,35 @@ Code Linter 命令最后有两个必需位置参数，顺序必须精确为：
 配置中受支持规则、ArkTS 编译和设备矩阵边界，不声明该扩展完整覆盖。
 
 `ohpm install` 已成功完成，仓库 lock 只解析公开的 `@ohos/hypium@1.0.25`，不含
-`file:` 或本机路径。Hypium `entry@default` 已执行 37 个用例，Failure 0、Error 0；
-`entry@ohosTest` 与 `entry@default` debug HAP 均已成功编译。
+`file:` 或本机路径。Hypium `entry@default` 已执行 40 个用例，Failure 0、Error 0；
+包含 4 个用例的 `entry@ohosTest` 与 `entry@default` debug HAP 均已成功编译。
 
-## 6. hdc、签名与 phone/tablet 人工矩阵
+## 6. DevEco 模拟器、签名与 phone/tablet 人工矩阵
 
-当前 `hdc list targets` 返回 `[Empty]`。CLI HAP 未签名，而仓库有意不提交证书、
-私钥、设备标识或本机 signing profile。因此 on-device `entry@ohosTest` 和人工矩阵
-尚未执行，不能把“HAP 编译通过”报告为“真机通过”。
+CLI HAP 未签名，证书、私钥、设备标识和本机 signing profile 由 DevEco Studio 管理。
+因此 `entry@ohosTest` 的 4 个用例编译成功与模拟器执行是两项独立证据；当前执行结果仍由
+测试人员在已启动且完成本地签名的模拟器上记录。
 
 连接 phone/tablet 或模拟器并在 DevEco Studio 完成本机自动签名后，先运行
-`entry@ohosTest`；接受条件是 `onDeviceBusinessSmoke` 的 3 个用例全部通过。随后
+`entry@ohosTest`；接受条件是 `onDeviceBusinessSmoke` 的 4 个用例全部通过。随后
 记录设备型号、HarmonyOS/API 版本、实际 vp、方向、主题、字号、结果和截图编号：
+
+人工业务验收从游客注册开始：在游客态打开受保护操作，从登录弹层切换到“注册”，填写
+显示名称、唯一的小写用户名、同时含英文字母和数字的 8 位以上密码及确认密码。点击
+“注册并登录”后，弹层应关闭并显示新游客身份，受保护功能可直接访问。退出后以相同
+用户名再次注册应显示重复用户名提示；空显示名称、非法用户名、弱密码和两次密码不一致
+应分别给出可恢复的字段提示。
 
 | 形态 | 视口 / 方向 | 模式 | 主要接受条件 | 当前状态 |
 |---|---|---|---|---|
-| phone | 360 × 800，竖屏 | 浅色、标准字号 | 底部五栏；登录、门票、排队、餐住及返回状态正确 | 待设备/签名 |
-| phone | 360 × 800，竖屏 | 深色、大字、高对比 | 底栏增高；文本不截断、按钮可达、可滚动、焦点和对比清晰 | 待设备/签名 |
-| phone | 800 × 360，横屏 | 浅色、标准字号 | 719/720vp 阈值无重复导航、闪烁或内容遮挡 | 待设备/签名 |
-| tablet | 800 × 1280，竖屏 | 浅色、标准字号 | 左侧五栏；主栏和门票/预约子页正确占用内容区 | 待设备/签名 |
-| tablet | 1280 × 800，横屏 | 深色、大字、高对比 | 侧栏增宽；双栏、弹层、长列表、空/错/离线态无溢出 | 待设备/签名 |
+| phone | 360 × 800，竖屏 | 浅色、标准字号 | 底部五栏；注册/自动登录、门票、排队、餐住及返回状态正确 | 待人工复验 |
+| phone | 360 × 800，竖屏 | 深色、大字、高对比 | 底栏增高；文本不截断、按钮可达、可滚动、焦点和对比清晰 | 待人工复验 |
+| phone | 800 × 360，横屏 | 浅色、标准字号 | 719/720vp 阈值无重复导航、闪烁或内容遮挡 | 待人工复验 |
+| tablet | 800 × 1280，竖屏 | 浅色、标准字号 | 左侧五栏；主栏和门票/预约子页正确占用内容区 | 待人工复验 |
+| tablet | 1280 × 800，横屏 | 深色、大字、高对比 | 侧栏增宽；双栏、弹层、长列表、空/错/离线态无溢出 | 待人工复验 |
 
-每行还要抽查：登录/退出后敏感状态清除；门票报价到退改；导览、人流、行程与 queue
+每行还要先抽查注册弹层、字段校验、注册后自动登录及重复用户名提示，再检查登录/退出后
+敏感状态清除；门票报价到退改；导览、人流、行程与 queue
 WebSocket 断开重连及旧 sequence 丢弃；商城、积分、客服、同行隐私和无障碍偏好；
 离线冷启动/outbox、SOS Demo、护照和绿色积分的 demo 标记。失败项必须附最短复现步骤。
 

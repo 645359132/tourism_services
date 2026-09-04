@@ -101,7 +101,7 @@ uv run ruff format --check .
 uv run pytest
 ```
 
-当前验收值：Ruff 退出码为 `0`；pytest 为 `130 passed`，总覆盖率 `72.65%`。
+当前验收值：Ruff 退出码为 `0`；pytest 为 `146 passed`，总覆盖率 `72.63%`。
 
 容器保持运行，在同一目录对真实 API 执行 45 秒单请求超时的冒烟测试：
 
@@ -110,7 +110,8 @@ uv run tourism-smoke --base-url http://127.0.0.1:8000 --timeout 45
 Set-Location ..
 ```
 
-当前验收输出为 `Real-network smoke passed (46 checks).`。这一步访问实际的 API、
+当前验收输出为 `Real-network smoke passed (49 checks).`。其中 3 项验证游客注册、
+注册后会话和重复用户名冲突；这一步访问实际的 API、
 PostgreSQL 和 Redis。
 
 ## 5. OpenHarmony 客户端
@@ -164,8 +165,9 @@ CLI 产物是 unsigned HAP。真机运行前须在 DevEco Studio 配置本地签
 
 真机与开发机应位于可互通网络；确认 Compose 已发布 `8000` 端口，并仅在可信网络为 Windows 防火墙放行入站 TCP `8000`。不要把 `127.0.0.1` 配给真机。
 应用内可通过“我的 → 开发环境 API 地址”修改当前进程使用的基址；该值必须包含
-`/api/v1`。预期 CLI 结果为 Code Linter `No defects found`、Hypium 37 passed，以及
-`entry@default`、`entry@ohosTest` 两个 HAP 构建成功。
+`/api/v1`。预期 CLI 结果为 Code Linter `No defects found`、Hypium 40 passed，以及
+`entry@default`、含 4 个用例的 `entry@ohosTest` 两个 HAP 构建成功。测试包在模拟器上的
+执行由测试人员在 DevEco Studio 完成本地签名后进行。
 
 ## 6. 演示账号
 
@@ -180,7 +182,15 @@ CLI 产物是 unsigned HAP。真机运行前须在 DevEco Studio 配置本地签
 
 ## 7. 人工业务闭环
 
-使用 `tourist_demo` 登录后，依次抽查：
+先在模拟器完成游客自助注册：
+
+1. 以游客态打开受保护操作，在登录弹层切换到“注册”；
+2. 填写显示名称、唯一的小写用户名、同时含英文字母和数字的 8 位以上密码，并确认密码；
+3. 点击“注册并登录”，确认弹层关闭且新游客已自动登录；
+4. 退出后用同一用户名再次注册，确认显示重复用户名提示；
+5. 抽查空显示名称、非法用户名、弱密码及确认密码不一致的字段提示。
+
+随后使用这个新账号或 `tourist_demo` 登录，依次抽查：
 
 1. 门票报价、下单、演示支付、电子票 QR、退款和改签；
 2. 导览、人流推送、个性行程、冲突检查和动态避堵；

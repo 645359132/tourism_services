@@ -70,7 +70,7 @@ On 2026-09-04, the API image was rebuilt and started with PostgreSQL 16, Redis 7
 coordination, and two Uvicorn workers. PostgreSQL migrated transactionally from an empty database
 to revision `20260901_0007`; a repeated upgrade was a no-op, `alembic check` found no drift, and
 two further seed runs were idempotent. All three containers remained healthy, Redis returned PONG,
-the API restart count stayed zero, and the real-network acceptance runner passed all 46 checks.
+the API restart count stayed zero, and the contemporaneous preflight runner passed all 46 checks.
 
 The same stack then ran the bounded five-user workload:
 
@@ -132,11 +132,16 @@ Prove the full REST/WebSocket acceptance path in another terminal:
 uv run tourism-smoke --base-url http://127.0.0.1:8765 --timeout 10
 ```
 
-The smoke is network-only and passed 46 checks: health, docs, capability metadata, authentication,
+The current smoke is network-only and passes 49 checks: health, docs, capability metadata, tourist
+registration, the immediately usable registered session, duplicate-username rejection, login,
 ticket order/payment/QR and validation-window enforcement, reservation confirm/cancel, shop
 checkout/payment, checkpoint 8 offline/sync/emergency/passport/green flows, a crowd initial frame
 plus later publisher tick, a queue frame plus one-use ticket rejection, and tourist plus demo-bot
 support messages verified again through REST persistence.
+
+The 46-check labels above belong to the recorded performance snapshots. The current runner adds
+three registration checks and passes 49; the stored request totals and latency percentiles remain
+associated with their original CSV artifacts.
 
 Stop the accelerated smoke listener. Restart Uvicorn with the normal publisher cadence:
 

@@ -1,6 +1,6 @@
 # API 与实时通信契约
 
-本文档描述当前服务端已经注册的 HTTP 与 WebSocket 接口。REST 路径已逐项与
+本文档描述当前服务端已经注册的 105 个 REST operations 与 3 条 WebSocket 接口。REST 路径已逐项与
 `server/app/api/routes/` 中的装饰器及应用生成的 OpenAPI `paths` 核对；请求和响应
 字段的最终机器可读定义以运行中服务的 OpenAPI 为准。WebSocket 不属于 OpenAPI，完整
 握手和事件约定见本文后半部分。
@@ -29,6 +29,14 @@ HTTPS 部署必须相应使用 `https://` 和 `wss://`。客户端配置值应�
 ```http
 Authorization: Bearer <access-token>
 ```
+
+`POST /api/v1/auth/register` 是公开游客注册入口，成功返回 201。用户名先去除首尾空白并
+转为小写，再按 `[a-z0-9_]`、3..64 字符校验；显示名称去除首尾空白后为 1..100 字符；
+密码为 8..128 字符，且至少包含一个 ASCII 字母和一个 ASCII 数字。调用方不能提交角色，
+服务端只分配 `tourist`，使用 Argon2id 保存密码散列，并在创建成功后直接返回 token pair
+和用户资料供客户端自动登录。用户名冲突返回 `409 USERNAME_TAKEN`；基础 `tourist` 角色
+不可用时返回 `503 REGISTRATION_UNAVAILABLE`。请求校验错误不会把提交的用户名或密码
+原值放入响应。
 
 `POST /api/v1/auth/login` 接收用户名和密码，并返回
 `access_token`、`refresh_token`、`token_type="bearer"`、以秒计的
@@ -69,7 +77,8 @@ token 携带 `roles`；refresh token 还携带 session/family 标识。每个受
 `details` 没有内容时省略。调用方可传入由 1 至 64 个字母、数字、点、下划线、冒号或
 连字符组成的 `X-Request-ID`；无效或缺失时服务端生成新值。响应同时返回
 `X-Request-ID`。认证失败为 401 并带 `WWW-Authenticate: Bearer`，权限不足为
-`403 FORBIDDEN`，请求模型错误为 `422 VALIDATION_ERROR`。分布式协调忙或不可用
+`403 FORBIDDEN`，请求模型错误为 `422 VALIDATION_ERROR`。注册、登录、刷新等凭据请求的
+校验信封会移除原始输入值。分布式协调忙或不可用
 分别返回 `409 OPERATION_IN_PROGRESS` 或 `503 COORDINATION_UNAVAILABLE`，并带
 `Retry-After: 1`。
 
@@ -123,11 +132,12 @@ feedback、support conversations、support messages 和 emergency SOS。查询�
 
 | 类别 | 默认上限 | 匹配请求 |
 |---|---:|---|
-| auth | 30 | `POST /api/v1/auth/login`、`POST /api/v1/auth/refresh` |
+| auth | 30 | `POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`POST /api/v1/auth/refresh` |
 | ws-ticket | 30 | 路径以 `/ws-tickets` 结尾的 POST |
 | mutation | 120 | 其余 POST、PUT、PATCH、DELETE |
 
-有效 access token 以 `user:<sub>` 计数，否则以直接对端 IP 计数。只有直接对端位于
+认证类请求始终按网络身份/IP 计数；其他受限请求在 access token 有效时以
+`user:<sub>` 计数，否则以直接对端 IP 计数。只有直接对端位于
 `TRUSTED_PROXY_NETWORKS` 时才采用 `X-Forwarded-For`。受限响应带
 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`（距窗口
 重置的秒数）；超限还带
@@ -167,6 +177,7 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 | 方法 | 路径 | 认证 / 角色 | 用途 |
 |---|---|---|---|
 | GET | `/health` | Public | 服务存活与必需 Redis pub/sub 健康状态 |
+| POST | `/api/v1/auth/register` | Public | 创建普通游客账号并签发 token pair，返回 201 |
 | POST | `/api/v1/auth/login` | Public | 用户名/密码登录并签发 token pair |
 | POST | `/api/v1/auth/refresh` | Public；body refresh token | 轮换 refresh token 并签发新 token pair |
 | POST | `/api/v1/auth/logout` | Public；body refresh token | 撤销 refresh-token family，返回 204 |

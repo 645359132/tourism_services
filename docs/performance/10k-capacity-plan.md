@@ -54,7 +54,7 @@ run.
 
 - Run migrations and idempotent seeds twice.
 - Start at least two app replicas with PostgreSQL and Redis.
-- Run the 46-check smoke through the load balancer.
+- Run the current 49-check smoke through the load balancer.
 - Verify a WebSocket ticket issued through one replica can be consumed only once through another,
   and that crowd, queue, and support events cross replica boundaries.
 - Stop Redis once with `REDIS_REQUIRED=true` and confirm readiness/coordination-sensitive requests

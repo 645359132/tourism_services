@@ -8,7 +8,7 @@
 
 ## 功能概览
 
-- JWT 登录、刷新令牌轮换与重放防护、Argon2id 密码散列、游客/商户/客服/管理员 RBAC。
+- 游客自助注册并自动登录、JWT 登录、刷新令牌轮换与重放防护、Argon2id 密码散列，以及游客/商户/客服/管理员 RBAC。
 - 动态票价、分时库存、幂等下单、演示支付、短时电子票二维码、核验、退款和改签。
 - 景点与文化讲解、示意地图、模拟人流 WebSocket、偏好行程、冲突检查与动态重排。
 - 项目/演出预约、虚拟排队、FastPass、酒店/民宿/餐饮和原子组合预约。
@@ -244,7 +244,7 @@ ArkUI 页面通过类型化 Service 和统一 `HttpClient`/WebSocket 客户端�
 
 | 领域 | 主要路径 | 能力 |
 |---|---|---|
-| 身份与元数据 | `/auth/*`、`/users/*`、`/meta/capabilities` | 登录/刷新/登出、个人偏好、角色与 Provider 元数据 |
+| 身份与元数据 | `/auth/*`、`/users/*`、`/meta/capabilities` | 游客注册、登录/刷新/登出、个人偏好、角色与 Provider 元数据 |
 | 门票 | `/ticketing/*` | 类型/场次、报价、订单、支付、二维码、核验、退改 |
 | 导览与行程 | `/guide/*`、`/itineraries/*` | 景点/讲解/地图/人流、路线、生成、冲突、重排 |
 | 预约与排队 | `/experiences*`、`/reservations*`、`/queues*`、`/hospitality/*` | 项目场次、组合预约、队列、FastPass、餐住 |
@@ -302,14 +302,15 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 | 检查 | 已接受结果 |
 |---|---|
-| 服务端 pytest | 130 tests passed；分支覆盖率 72.65%，通过 `>= 70%` 门禁；包含 PostgreSQL 离线 DDL 门禁 |
+| 服务端 pytest | 146 tests passed；分支覆盖率 72.63%，通过 `>= 70%` 门禁；包含游客注册与 PostgreSQL 离线 DDL 门禁 |
 | Ruff | `uv run ruff check .` 通过 |
-| HarmonyOS 本地业务测试 | Hvigor `test`：37 passed，Failure 0，Error 0 |
-| 真实网络 smoke | SQLite 与 PostgreSQL + Redis 双 worker 均为 46/46；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
+| HarmonyOS 本地业务测试 | Hvigor `test`：40 passed，Failure 0，Error 0 |
+| 真实网络 smoke | 当前 runner 为 49/49，其中注册、注册会话和重复用户名占 3 项；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
 | Locust 本机基线 | 5 users / 30 s；CSV 320 requests、0 failures、11.42 req/s、aggregate p95 160 ms |
 | Locust Compose 基线 | PostgreSQL 16 + Redis 7 + 双 worker；CSV 319 requests、0 failures、11.33 req/s、aggregate p95 130 ms |
-| HarmonyOS 编译 | `entry@default` debug HAP 与 `entry@ohosTest` debug HAP 均构建成功 |
+| HarmonyOS 编译 | `entry@default` debug HAP 与含 4 个用例的 `entry@ohosTest` debug HAP 均构建成功 |
 | Code Linter | 仓库配置启用的 TypeScript/security recommended 规则执行且零缺陷 |
+| API 契约 | OpenAPI 共 105 个 REST operations；另有 3 条 WebSocket 契约 |
 | Compose | API/PostgreSQL/Redis 均 healthy；空库迁移至 `0007`、重复迁移/seed、schema drift、Redis PONG 均通过 |
 
 详细证据与复验范围：
@@ -324,7 +325,7 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 ### 当前需要外部环境完成的验证
 
-- `hdc list targets` 当前返回 `[Empty]`，仓库也不保存签名材料；设备 `ohosTest` 和 phone/tablet 人工矩阵需要连接目标并在 DevEco Studio 配置本地签名后执行。
+- `entry@ohosTest` 的 4 个用例已经编译；模拟器上的测试包执行和 phone/tablet 人工矩阵由测试人员在 DevEco Studio 完成本地签名后执行并记录结果。
 - 当前 DevEco `arkPerfCheck` 扩展会在六个大型 ArkUI 文件上触发内部 `getDeclaringMethod` 异常；已接受门禁是实际执行且零缺陷的 TypeScript/security 规则、ArkTS 编译和设备矩阵。升级检查器后应重跑 cross-device/性能扩展。
 
 ## 常见问题

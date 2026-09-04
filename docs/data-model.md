@@ -11,7 +11,7 @@ Source: [identity models](../server/app/db/models/user.py#L20), [roles](../serve
 | Tables/entities | Ownership and relationships | Material uniqueness and checks |
 |---|---|---|
 | `seed_records` (`SeedRecord`) | Infrastructure ledger for idempotent seed operations; not user-owned. | String `key` is the primary key, so a seed unit is recorded once. |
-| `users` (`User`) | Identity root. Owns preferences, role links, refresh sessions, and domain records. | Unique `username`; active flag gates authentication. Passwords contain Argon2id hashes, never plaintext. |
+| `users` (`User`) | Identity root. Owns preferences, role links, refresh sessions, and domain records. Public registration creates this row together with a `tourist` role link and refresh session before returning its token pair. | Unique normalized lowercase `username` closes concurrent registration races; active flag gates authentication. Passwords contain Argon2id hashes, never plaintext. |
 | `roles`, `user_roles` (`Role`, `UserRole`) | Global role catalog plus many-to-many user assignment. Both foreign keys cascade. | Unique role `name`; composite primary key `(user_id, role_id)` prevents duplicate assignment. |
 | `tourist_preferences` (`TouristPreference`) | Exactly zero or one row per user; language, interests, accessibility needs, and notification preference. | `user_id` is both primary key and cascading foreign key. |
 | `refresh_sessions` (`RefreshSession`) | User-owned, self-referencing rotation chain grouped by `family_id`; parent deletion becomes `NULL`. | Unique `token_jti`; indexed family and user IDs. Consumed/revoked timestamps and replacement JTI support replay detection and family revocation. |
