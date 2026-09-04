@@ -1,6 +1,6 @@
 # 全栈日常启动（Windows PowerShell 5.1）
 
-本文是当前系统的日常运行手册：使用 Compose 命名卷保留 PostgreSQL/Redis 数据，适合反复启动、停止和开发。需要从全新空卷做一次隔离验收时，请改用[隔离空卷验收指南](acceptance.md)，不要混用两套流程。项目总览见[根 README](../../README.md)，实际编排以 [docker-compose.yml](../../docker-compose.yml) 为准。如果 `docker compose ps` 已显示三个服务均为 `healthy`，可直接从第 3 节继续验证，不必重新生成 JWT 或重建容器。
+本文是当前系统的日常运行手册：使用 Compose 命名卷保留 PostgreSQL/Redis 数据，适合反复启动、停止和开发。只有 Python 3.12 与 DevEco Studio、无需验证 PostgreSQL/Redis 时，请改用[轻量启动指南](lightweight-startup.md)。需要从全新空卷做一次隔离验收时，请改用[隔离空卷验收指南](acceptance.md)，不要混用这些流程。项目总览见[根 README](../../README.md)，实际编排以 [docker-compose.yml](../../docker-compose.yml) 为准。如果 `docker compose ps` 已显示三个服务均为 `healthy`，可直接从第 3 节继续验证，不必重新生成 JWT 或重建容器。
 
 ## 1. 准备与环境变量
 

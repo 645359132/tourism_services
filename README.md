@@ -4,7 +4,7 @@
 
 系统已经打通游客、商户、客服、管理员四种角色，以及门票交易、导览与人流、规则行程、项目预约与排队、餐住组合预约、商城与积分、反馈客服、同行协作、无障碍、离线应急、文化护照和绿色任务。外部支付、地图、AI、闸机、救援等能力均通过明确标注的 Demo Provider 隔离，不会产生真实扣款、导航或救援派单。
 
-运行入口：日常保留数据的完整 PostgreSQL + Redis + HarmonyOS 流程见[全栈日常启动指南](docs/testing/full-stack-startup.md)；需要独立 project、全新空卷和完整证据检查时使用[最终验收手册](docs/testing/acceptance.md)。
+运行入口：只有 Python 3.12 与 DevEco Studio 时使用[轻量启动指南](docs/testing/lightweight-startup.md)；日常保留数据的 PostgreSQL + Redis + HarmonyOS 流程见[全栈日常启动指南](docs/testing/full-stack-startup.md)；需要独立 project、全新空卷和完整证据检查时使用[最终验收手册](docs/testing/acceptance.md)。
 
 ## 功能概览
 
@@ -50,7 +50,7 @@ tourism_services/
 
 ## SQLite 零服务快速启动
 
-默认模式不需要 PostgreSQL、Redis 或 Docker。请从仓库根目录严格按“依赖 → 数据目录 → 迁移 → seed → API”的顺序执行：
+默认模式不需要 PostgreSQL、Redis 或 Docker。只有 Python 3.12 与 DevEco Studio 的首次安装、日常启动、模拟器连接和模式切换说明见[轻量启动指南](docs/testing/lightweight-startup.md)。下面是已经安装 `uv` 后的最短启动路径，请严格按“依赖 → 数据目录 → 迁移 → seed → API”的顺序执行：
 
 ```powershell
 Set-Location server
@@ -316,6 +316,7 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 详细证据与复验范围：
 
 - [全栈日常启动指南](docs/testing/full-stack-startup.md)
+- [Python 3.12 + DevEco Studio 轻量启动指南](docs/testing/lightweight-startup.md)
 - [全栈验收说明](docs/testing/acceptance.md)
 - [客户端质量与设备矩阵](docs/testing/client-quality.md)
 - [本地性能基线与原始 CSV](docs/performance/README.md)
