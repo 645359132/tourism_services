@@ -15,7 +15,13 @@ import { ApiErrorCode, ApiErrorInfo } from '../network/ApiError';
 import { CrowdSocket, CrowdSocketState } from '../network/CrowdSocket';
 import { NetworkResult } from '../network/HttpClient';
 import { GuideService } from '../network/services/GuideService';
-import { buildCrowdAlternative, shouldAcceptCrowdSequence } from '../utils/GuideRules';
+import {
+  buildCrowdAlternative,
+  plannedRouteModeLabel,
+  plannedRoutePathText,
+  plannedRouteStepLabel,
+  shouldAcceptCrowdSequence
+} from '../utils/GuideRules';
 import { ContentState } from '../models/AppModels';
 import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
 
@@ -43,6 +49,10 @@ export struct GuidePage {
   @State wheelchair: boolean = false;
   @State stroller: boolean = false;
   @State routePlan: RoutePlanResponse | null = null;
+  @State routeMessage: string = '选择起点和终点后，点击“规划路线”';
+  @State routeBusy: boolean = false;
+  @State routeError: boolean = false;
+  private routeRequestVersion: number = 0;
   private service: GuideService = new GuideService();
   private crowdSocket: CrowdSocket | null = null;
 
@@ -216,34 +226,83 @@ export struct GuidePage {
     return this.mapData.nodes[0].id;
   }
 
+  private routeStepLabel(nodeId: string): string {
+    return this.routePlan === null ? '' : plannedRouteStepLabel(this.routePlan.node_ids, nodeId);
+  }
+
+  private routePathText(): string {
+    if (this.mapData === null || this.routePlan === null) {
+      return '';
+    }
+    return plannedRoutePathText(this.mapData.nodes, this.routePlan.node_ids);
+  }
+
+  private invalidateRoute(message: string): void {
+    this.routeRequestVersion += 1;
+    this.routePlan = null;
+    this.routeMessage = message;
+    this.routeBusy = false;
+    this.routeError = false;
+  }
+
   private async planAccessibleRoute(): Promise<void> {
     if (this.originNodeId.length === 0 || this.targetNodeId.length === 0 ||
       this.originNodeId === this.targetNodeId) {
-      this.operationMessage = '请选择不同的起点和终点';
+      this.invalidateRoute('请选择两个不同的起点和终点');
+      this.routeError = true;
       return;
     }
-    this.operationBusy = true;
+    const requestVersion: number = this.routeRequestVersion + 1;
+    this.routeRequestVersion = requestVersion;
+    const originNodeId: string = this.originNodeId;
+    const targetNodeId: string = this.targetNodeId;
+    const wheelchair: boolean = this.wheelchair;
+    const stroller: boolean = this.stroller;
+    this.routeBusy = true;
+    this.routeError = false;
+    this.routePlan = null;
+    this.routeMessage = '正在计算示意路线…';
     const result: NetworkResult<RoutePlanResponse> = await this.service.planRoute(
-      this.originNodeId, this.targetNodeId, this.wheelchair, this.stroller);
-    this.operationBusy = false;
+      originNodeId, targetNodeId, wheelchair, stroller);
+    if (requestVersion !== this.routeRequestVersion) {
+      return;
+    }
+    this.routeBusy = false;
     if (result.successful && result.data !== null) {
       this.routePlan = result.data;
-      this.operationMessage = '已由示意地图规则计算路线';
+      this.routeMessage = '路线规划完成';
+      this.routeError = false;
     } else {
       this.routePlan = null;
-      this.operationMessage = this.errorText(result.error);
+      this.routeMessage = this.errorText(result.error);
+      this.routeError = true;
     }
   }
 
   @Builder
   private mapNode(node: GuideMapNode) {
     Column({ space: 4 }) {
-      Text(node.kind === 'MEDICAL' ? '医' : node.kind === 'TOILET' ? '厕' : node.kind === 'REST' ? '休' : '●')
-        .fontSize(18)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(!this.showHeat ? $r('app.color.primary') :
-          this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
-            this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') : $r('app.color.success'))
+      Row({ space: 5 }) {
+        Text(node.kind === 'MEDICAL' ? '医' : node.kind === 'TOILET' ? '厕' : node.kind === 'REST' ? '休' : '●')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(!this.showHeat ? $r('app.color.primary') :
+            this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
+              this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') :
+                $r('app.color.success'))
+        if (this.routeStepLabel(node.id).length > 0) {
+          Text(this.routeStepLabel(node.id))
+            .width(22)
+            .height(22)
+            .textAlign(TextAlign.Center)
+            .fontSize(10)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.White)
+            .borderRadius(11)
+            .backgroundColor($r('app.color.primary'))
+        }
+      }
+      .justifyContent(FlexAlign.Center)
       Text(node.name)
         .fontSize(12)
         .fontColor($r('app.color.text_primary'))
@@ -256,9 +315,11 @@ export struct GuidePage {
     .height(78)
     .justifyContent(FlexAlign.Center)
     .borderRadius(14)
-    .border({ width: this.showHeat ? 2 : 0,
-      color: this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
-        this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') : $r('app.color.success') })
+    .border({ width: this.routeStepLabel(node.id).length > 0 ? 3 : (this.showHeat ? 2 : 0),
+      color: this.routeStepLabel(node.id).length > 0 ? $r('app.color.primary') :
+        this.crowdLevelForNode(node.id) === CrowdLevel.HIGH ? $r('app.color.error') :
+          this.crowdLevelForNode(node.id) === CrowdLevel.MEDIUM ? $r('app.color.warning') :
+            $r('app.color.success') })
     .backgroundColor($r('app.color.surface_tint'))
   }
 
@@ -426,49 +487,95 @@ export struct GuidePage {
               Button(`起点：${this.nodeName(this.originNodeId)}`)
                 .layoutWeight(1)
                 .fontSize(11)
+                .enabled(!this.routeBusy)
                 .onClick(() => {
                   this.originNodeId = this.cycleNode(this.originNodeId);
+                  this.invalidateRoute('起点已更新，请重新规划路线');
                 })
               Button(`终点：${this.nodeName(this.targetNodeId)}`)
                 .layoutWeight(1)
                 .fontSize(11)
+                .enabled(!this.routeBusy)
                 .onClick(() => {
                   this.targetNodeId = this.cycleNode(this.targetNodeId);
+                  this.invalidateRoute('终点已更新，请重新规划路线');
                 })
             }
             .width('100%')
             Row() {
               Text('轮椅路线').fontColor($r('app.color.text_primary')).layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.wheelchair }).onChange((value: boolean) => {
-                this.wheelchair = value;
-                AccessibilityStore.getInstance().setWheelchair(value);
-              })
+              Toggle({ type: ToggleType.Switch, isOn: this.wheelchair })
+                .enabled(!this.routeBusy)
+                .onChange((value: boolean) => {
+                  this.wheelchair = value;
+                  AccessibilityStore.getInstance().setWheelchair(value);
+                  this.invalidateRoute('轮椅通行条件已更新，请重新规划路线');
+                })
               Text('亲子推车').fontColor($r('app.color.text_primary')).layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.stroller }).onChange((value: boolean) => {
-                this.stroller = value;
-                AccessibilityStore.getInstance().setStroller(value);
-              })
+              Toggle({ type: ToggleType.Switch, isOn: this.stroller })
+                .enabled(!this.routeBusy)
+                .onChange((value: boolean) => {
+                  this.stroller = value;
+                  AccessibilityStore.getInstance().setStroller(value);
+                  this.invalidateRoute('婴儿车通行条件已更新，请重新规划路线');
+                })
             }
             .width('100%')
-            Button(this.operationBusy ? '计算中…' : '规划路线')
-              .enabled(!this.operationBusy)
+            if (this.routePlan === null) {
+              Text(this.routeMessage)
+                .width('100%')
+                .padding(12)
+                .borderRadius(12)
+                .fontSize(12)
+                .fontColor(this.routeBusy ? $r('app.color.primary') :
+                  this.routeError ? $r('app.color.error') : $r('app.color.text_secondary'))
+                .backgroundColor($r('app.color.surface_tint'))
+            } else {
+              Column({ space: 8 }) {
+                Row() {
+                  Text('路线规划完成')
+                    .fontSize(16)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor($r('app.color.primary'))
+                    .layoutWeight(1)
+                  Text(plannedRouteModeLabel(this.wheelchair, this.stroller))
+                    .fontSize(10)
+                    .fontColor($r('app.color.success'))
+                }
+                .width('100%')
+                Text(this.routePathText())
+                  .width('100%')
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary'))
+                Row({ space: 16 }) {
+                  Text(`全程 ${this.routePlan.distance_m} 米`)
+                    .fontSize(12)
+                    .fontColor($r('app.color.primary'))
+                  Text(`步行约 ${this.routePlan.walk_minutes} 分钟`)
+                    .fontSize(12)
+                    .fontColor($r('app.color.primary'))
+                }
+                .width('100%')
+                Text(this.routePlan.explanation.join(' · '))
+                  .width('100%')
+                  .fontSize(10)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .width('100%')
+              .padding(14)
+              .borderRadius(14)
+              .border({ width: 1, color: $r('app.color.primary') })
+              .backgroundColor($r('app.color.surface_tint'))
+            }
+            Button(this.routeBusy ? '计算中…' : (this.routePlan === null ? '规划路线' : '重新规划路线'))
+              .enabled(!this.routeBusy)
               .width('100%')
               .fontColor(Color.White)
               .backgroundColor($r('app.color.primary'))
               .onClick(() => {
                 this.planAccessibleRoute();
               })
-            if (this.routePlan !== null) {
-              Text(`${this.routePlan.distance_m} 米 · 约 ${this.routePlan.walk_minutes} 分钟 · ` +
-                `${this.routePlan.accessible ? '满足无障碍条件' : '存在无障碍限制'}`)
-                .width('100%')
-                .fontSize(12)
-                .fontColor(this.routePlan.accessible ? $r('app.color.success') : $r('app.color.warning'))
-              Text(this.routePlan.explanation.join(' · '))
-                .width('100%')
-                .fontSize(11)
-                .fontColor($r('app.color.text_secondary'))
-            }
           }
           .width('100%')
           .padding(16)

@@ -10,6 +10,7 @@ import {
 } from '../main/ets/models/BookingModels';
 import {
   CrowdLevel,
+  GuideMapNode,
   Itinerary,
   ItineraryGenerateRequest,
   ItineraryItem
@@ -83,6 +84,9 @@ import {
   itinerarySeverityLabel,
   localizeItineraryText,
   localizeItineraryTexts,
+  plannedRouteModeLabel,
+  plannedRoutePathText,
+  plannedRouteStepLabel,
   parseCrowdEnvelope,
   shouldAcceptCrowdSequence,
   validateItineraryGenerateInput
@@ -318,6 +322,32 @@ export default function tourismBusinessRulesTest() {
         'Only unlocked items were eligible for movement'
       ]).join(' · ')).assertEqual('由本地规则引擎生成，未连接外部智能模型 · 本次仅调整未锁定的行程项目');
       expect(localizeItineraryText('服务端已经返回中文')).assertEqual('服务端已经返回中文');
+    });
+
+    it('buildsVisiblePlannedRouteFeedback', 0, () => {
+      const entrance: GuideMapNode = new GuideMapNode();
+      entrance.id = 'entrance';
+      entrance.name = '游客中心入口';
+      const garden: GuideMapNode = new GuideMapNode();
+      garden.id = 'garden';
+      garden.name = '百草园';
+      const museum: GuideMapNode = new GuideMapNode();
+      museum.id = 'museum';
+      museum.name = '文化博物馆';
+      const routeNodeIds: string[] = ['entrance', 'garden', 'museum'];
+
+      expect(plannedRoutePathText([entrance, garden, museum], routeNodeIds))
+        .assertEqual('游客中心入口 → 百草园 → 文化博物馆');
+      expect(plannedRouteStepLabel(routeNodeIds, 'entrance')).assertEqual('起');
+      expect(plannedRouteStepLabel(routeNodeIds, 'garden')).assertEqual('2');
+      expect(plannedRouteStepLabel(routeNodeIds, 'museum')).assertEqual('终');
+      expect(plannedRouteStepLabel(routeNodeIds, 'missing')).assertEqual('');
+      expect(plannedRouteStepLabel(['entrance'], 'entrance')).assertEqual('起终');
+      expect(plannedRouteModeLabel(false, false)).assertEqual('普通步行路线');
+      expect(plannedRouteModeLabel(true, false)).assertEqual('轮椅可通行');
+      expect(plannedRouteModeLabel(false, true)).assertEqual('婴儿车可通行');
+      expect(plannedRouteModeLabel(true, true)).assertEqual('轮椅与婴儿车可通行');
+      expect(plannedRoutePathText([entrance], ['missing'])).assertEqual('未知节点');
     });
 
     it('parsesUnifiedCrowdWebSocketEnvelope', 0, () => {

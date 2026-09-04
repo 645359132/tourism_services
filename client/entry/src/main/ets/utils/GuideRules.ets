@@ -3,6 +3,7 @@ import {
   CrowdEnvelope,
   CrowdItem,
   CrowdLevel,
+  GuideMapNode,
   Itinerary,
   ItineraryGenerateRequest,
   ItineraryItem
@@ -52,6 +53,51 @@ export class ReplanAssessment {
     this.accepted = accepted;
     this.message = message;
   }
+}
+
+export function plannedRouteStepLabel(routeNodeIds: string[], nodeId: string): string {
+  const index: number = routeNodeIds.indexOf(nodeId);
+  if (index < 0) {
+    return '';
+  }
+  if (routeNodeIds.length === 1) {
+    return '起终';
+  }
+  if (index === 0) {
+    return '起';
+  }
+  if (index === routeNodeIds.length - 1) {
+    return '终';
+  }
+  return `${index + 1}`;
+}
+
+export function plannedRoutePathText(nodes: GuideMapNode[], routeNodeIds: string[]): string {
+  const names: string[] = [];
+  for (let routeIndex: number = 0; routeIndex < routeNodeIds.length; routeIndex++) {
+    let name: string = '未知节点';
+    for (let nodeIndex: number = 0; nodeIndex < nodes.length; nodeIndex++) {
+      if (nodes[nodeIndex].id === routeNodeIds[routeIndex]) {
+        name = nodes[nodeIndex].name;
+        break;
+      }
+    }
+    names.push(name);
+  }
+  return names.join(' → ');
+}
+
+export function plannedRouteModeLabel(wheelchair: boolean, stroller: boolean): string {
+  if (wheelchair && stroller) {
+    return '轮椅与婴儿车可通行';
+  }
+  if (wheelchair) {
+    return '轮椅可通行';
+  }
+  if (stroller) {
+    return '婴儿车可通行';
+  }
+  return '普通步行路线';
 }
 
 export function itineraryKindLabel(kind: string): string {

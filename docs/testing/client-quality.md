@@ -9,7 +9,7 @@
 | 检查 | 结果 | 证据 |
 |---|---|---|
 | OHPM 依赖与锁文件可移植性 | 通过 | `ohpm install` 退出码 0；`oh-package-lock.json5` 只包含 `@ohos/hypium@1.0.25` 的公开 OHPM 地址、版本和完整性摘要，不含盘符、用户目录或本地 `file:` 依赖。 |
-| Hypium 本地业务规则 | 通过 | Hvigor `test` 构建成功；43 个用例全部通过，Failure 0、Error 0，包含注册字段、重复用户名错误映射、历史英文行程的中文展示兼容，以及模拟器默认地址和连接失败提示。 |
+| Hypium 本地业务规则 | 通过 | Hvigor `test` 构建成功；44 个用例全部通过，Failure 0、Error 0，包含注册字段、重复用户名错误映射、历史英文行程的中文展示兼容、模拟器连接提示，以及路线节点顺序和出行模式展示。 |
 | `ohosTest` 业务 smoke 编译 | 通过 | `entry@ohosTest` HAP 构建成功；4 个用例覆盖游客注册输入、购票状态流、离线/应急安全和 719/720vp 响应式边界。 |
 | debug HAP | 通过 | `entry@default` HAP 构建成功；CLI 产物未签名，供编译验收使用。 |
 | DevEco Code Linter | 支持的规则门禁通过 | 配置改为本机支持的 TypeScript 与 security recommended 规则；CLI 以 0 退出并输出 `No defects found`，引擎日志确认 ESLint 实际执行且 Errors/Warns/Suggestions 均为 0。附带的 `arkPerfCheck` 仍会在 6 个大型 ArkUI 文件上触发其内部 `getDeclaringMethod` 异常，因此不把该扩展的覆盖范围虚报为完整。 |
@@ -64,7 +64,7 @@ Code Linter 的第一个位置参数必须是 OpenHarmony SDK，第二个才是�
 
 1. 完成上述游客注册流程；随后验证登录成功后的身份和返回路径正确，退出后不残留敏感信息。
 2. 门票报价、库存变化、支付状态、二维码入口和退改入口布局稳定。
-3. 导览/人流/行程以及排队 WebSocket 断开、重连和旧序列丢弃有明确反馈。
+3. 导览中切换起终点并规划路线，确认结果卡就地出现、节点按顺序高亮；人流、行程及排队 WebSocket 断开、重连和旧序列丢弃有明确反馈。
 4. 商城结算、积分兑换、客服、同行协作和无障碍偏好可达且输入错误可恢复。
 5. 离线包冷启动、待同步 outbox、SOS Demo、数字护照和绿色积分明确标注状态，不把演示能力呈现为真实救援派单。
 

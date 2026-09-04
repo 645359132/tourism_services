@@ -165,7 +165,7 @@ CLI 产物是 unsigned HAP。真机运行前须在 DevEco Studio 配置本地签
 
 真机与开发机应位于可互通网络；确认 Compose 已发布 `8000` 端口，并仅在可信网络为 Windows 防火墙放行入站 TCP `8000`。不要把 `127.0.0.1` 配给真机。
 应用内可通过“我的 → 开发环境 API 地址”修改当前进程使用的基址；该值必须包含
-`/api/v1`。预期 CLI 结果为 Code Linter `No defects found`、Hypium 43 passed，以及
+`/api/v1`。预期 CLI 结果为 Code Linter `No defects found`、Hypium 44 passed，以及
 `entry@default`、含 4 个用例的 `entry@ohosTest` 两个 HAP 构建成功。测试包在模拟器上的
 执行由测试人员在 DevEco Studio 完成本地签名后进行。
 
