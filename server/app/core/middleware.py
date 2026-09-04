@@ -180,7 +180,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         actor = rate_limit_client_identity(request)
         authorization = request.headers.get("Authorization", "")
         scheme, _, token = authorization.partition(" ")
-        if scheme.lower() == "bearer" and token:
+        # Authentication endpoints stay bound to the network identity. Otherwise
+        # a registered caller could rotate valid bearer subjects to evade the
+        # login/registration quota while forcing password hashing and SQL writes.
+        if category != "auth" and scheme.lower() == "bearer" and token:
             try:
                 claims = decode_token(
                     token,
@@ -256,6 +259,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.method == "POST" and path.endswith("/ws-tickets"):
             return "ws-ticket", settings.rate_limit_ws_ticket_requests
         if request.method == "POST" and path in {
+            "/api/v1/auth/register",
             "/api/v1/auth/login",
             "/api/v1/auth/refresh",
         }:

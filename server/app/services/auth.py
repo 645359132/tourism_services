@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import jwt
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,7 +23,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.models.refresh_session import RefreshSession
-from app.db.models.role import UserRole
+from app.db.models.role import Role, UserRole
 from app.db.models.user import User
 
 DUMMY_PASSWORD_HASH = hash_password("not-a-real-user-password")
@@ -54,6 +55,82 @@ def _user_statement():
 
 async def get_user_by_id(session: AsyncSession, user_id: UUID) -> User | None:
     return await session.scalar(_user_statement().where(User.id == user_id))
+
+
+async def register_tourist_and_issue(
+    session: AsyncSession,
+    *,
+    username: str,
+    display_name: str,
+    password: str,
+    settings: Settings,
+) -> AuthResult:
+    """Create a tourist identity and an immediately usable token session."""
+
+    encoded_password = hash_password(password)
+
+    # SQLite cannot upgrade two concurrent read transactions safely. Acquiring its
+    # writer slot before reading the role makes duplicate registration deterministic;
+    # PostgreSQL continues to rely on the users.username unique constraint.
+    bind = session.get_bind()
+    if bind.dialect.name == "sqlite":
+        await session.execute(text("BEGIN IMMEDIATE"))
+
+    tourist_role = await session.scalar(select(Role).where(Role.name == "tourist"))
+    if tourist_role is None:
+        await session.rollback()
+        raise AppError(
+            status_code=503,
+            code="REGISTRATION_UNAVAILABLE",
+            message="Registration is temporarily unavailable",
+        )
+
+    user = User(
+        username=username,
+        display_name=display_name,
+        password_hash=encoded_password,
+    )
+    user.role_links.append(UserRole(role=tourist_role))
+    session.add(user)
+    try:
+        # Force the username uniqueness check inside the guarded block. This handles
+        # simultaneous requests without a check-then-insert race.
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        existing_user_id = await session.scalar(select(User.id).where(User.username == username))
+        if existing_user_id is not None:
+            raise AppError(
+                status_code=409,
+                code="USERNAME_TAKEN",
+                message="Username is already registered",
+            ) from exc
+        raise AppError(
+            status_code=503,
+            code="REGISTRATION_UNAVAILABLE",
+            message="Registration is temporarily unavailable",
+        ) from exc
+
+    family_id = uuid4()
+    session_id = uuid4()
+    refresh_token, refresh_expires_at, refresh_jti = create_refresh_token(
+        user_id=user.id,
+        session_id=session_id,
+        family_id=family_id,
+        settings=settings,
+    )
+    session.add(
+        RefreshSession(
+            id=session_id,
+            family_id=family_id,
+            user_id=user.id,
+            token_jti=refresh_jti,
+            expires_at=refresh_expires_at,
+        )
+    )
+    access_token, expires_in = create_access_token(user.id, user.role_names, settings)
+    await session.commit()
+    return AuthResult(access_token, refresh_token, expires_in, user)
 
 
 async def authenticate_and_issue(

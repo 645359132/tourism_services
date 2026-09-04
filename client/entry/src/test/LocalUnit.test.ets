@@ -43,7 +43,17 @@ import {
 import { ApiErrorCode, ApiErrorInfo, extractServerErrorCode, mapApiError } from '../main/ets/network/ApiError';
 import { NetworkResult } from '../main/ets/network/HttpClient';
 import { JourneyRoutePolicy } from '../main/ets/network/services/JourneyService';
-import { ValidationResult, validateCredentials, validatePassword, validatePhone } from '../main/ets/utils/InputValidators';
+import {
+  ValidationResult,
+  validateCredentials,
+  validatePassword,
+  validatePasswordConfirmation,
+  validatePhone,
+  validateRegistrationDisplayName,
+  validateRegistrationInput,
+  validateRegistrationPassword,
+  validateRegistrationUsername
+} from '../main/ets/utils/InputValidators';
 import { findTripConflict, hasTripConflict } from '../main/ets/utils/TripConflict';
 import { globalContentExtent, globalContentScale } from '../main/ets/utils/AccessibilityRules';
 import { WindowSizeClass, classifyWindowWidth, isWideWindow } from '../main/ets/utils/ResponsiveRules';
@@ -121,12 +131,17 @@ export default function tourismBusinessRulesTest() {
       const unauthorized: ApiErrorInfo = mapApiError(401, '', false);
       const unavailable: ApiErrorInfo = mapApiError(503, '', false);
       const offline: ApiErrorInfo = mapApiError(0, '', true);
+      const usernameTaken: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"USERNAME_TAKEN","message":"Username is already registered"}}', false);
 
       expect(unauthorized.code).assertEqual(ApiErrorCode.UNAUTHORIZED);
       expect(unauthorized.retriable).assertFalse();
       expect(unavailable.code).assertEqual(ApiErrorCode.SERVER);
       expect(unavailable.retriable).assertTrue();
       expect(offline.code).assertEqual(ApiErrorCode.OFFLINE);
+      expect(usernameTaken.code).assertEqual(ApiErrorCode.CONFLICT);
+      expect(usernameTaken.statusCode).assertEqual(409);
+      expect(usernameTaken.serverCode).assertEqual('USERNAME_TAKEN');
     });
 
     it('mapsTimeoutBeforeUnknownError', 0, () => {
@@ -145,6 +160,44 @@ export default function tourismBusinessRulesTest() {
       expect(invalidPhone.valid).assertFalse();
       expect(password.valid).assertTrue();
       expect(credentials.valid).assertTrue();
+    });
+
+    it('validatesRegistrationIdentityFields', 0, () => {
+      expect(validateRegistrationDisplayName(' 景区游客 ').valid).assertTrue();
+      expect(validateRegistrationDisplayName('   ').valid).assertFalse();
+      expect(validateRegistrationDisplayName('游'.repeat(100)).valid).assertTrue();
+      expect(validateRegistrationDisplayName('游'.repeat(101)).valid).assertFalse();
+
+      expect(validateRegistrationUsername('visitor_2026').valid).assertTrue();
+      expect(validateRegistrationUsername('a'.repeat(64)).valid).assertTrue();
+      expect(validateRegistrationUsername('ab').valid).assertFalse();
+      expect(validateRegistrationUsername('a'.repeat(65)).valid).assertFalse();
+      expect(validateRegistrationUsername('Visitor_2026').valid).assertFalse();
+      expect(validateRegistrationUsername('visitor-2026').valid).assertFalse();
+    });
+
+    it('validatesRegistrationPasswordAndConfirmation', 0, () => {
+      expect(validateRegistrationPassword('abcdefg1').valid).assertTrue();
+      expect(validateRegistrationPassword(`${'a'.repeat(127)}1`).valid).assertTrue();
+      expect(validateRegistrationPassword('abcdefg').valid).assertFalse();
+      expect(validateRegistrationPassword('12345678').valid).assertFalse();
+      expect(validateRegistrationPassword('abc1234').valid).assertFalse();
+      expect(validateRegistrationPassword(`${'a'.repeat(128)}1`).valid).assertFalse();
+      expect(validatePasswordConfirmation('Tourism123!', 'Tourism123!').valid).assertTrue();
+      expect(validatePasswordConfirmation('Tourism123!', '').valid).assertFalse();
+      expect(validatePasswordConfirmation('Tourism123!', 'Tourism124!').valid).assertFalse();
+    });
+
+    it('validatesCompleteRegistrationAndLongLoginPassword', 0, () => {
+      const longPassword: string = `${'a'.repeat(127)}1`;
+      const registration: ValidationResult = validateRegistrationInput(
+        ' 景区游客 ', 'visitor_2026', 'Tourism123!', 'Tourism123!');
+      expect(registration.valid).assertTrue();
+      expect(validateRegistrationInput('', 'visitor_2026', 'Tourism123!', 'Tourism123!').message)
+        .assertEqual('请输入显示名称');
+      expect(validateRegistrationInput('景区游客', 'Visitor', 'Tourism123!', 'Tourism123!').valid).assertFalse();
+      expect(validateRegistrationInput('景区游客', 'visitor', 'Tourism123!', 'mismatch').valid).assertFalse();
+      expect(validateCredentials('visitor_2026', longPassword).valid).assertTrue();
     });
 
     it('detectsOverlappingTripItems', 0, () => {

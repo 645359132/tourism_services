@@ -3,6 +3,7 @@ import { TicketOrderStatus } from '../../../main/ets/models/TicketModels';
 import { isSafeTravelCachePayload } from '../../../main/ets/models/PersistenceModels';
 import { shanghaiDateAfterDays } from '../../../main/ets/utils/BookingRules';
 import { classifySyncFailure, SyncFailureDisposition, validateSos } from '../../../main/ets/utils/JourneyRules';
+import { validateRegistrationInput } from '../../../main/ets/utils/InputValidators';
 import { classifyWindowWidth, WindowSizeClass } from '../../../main/ets/utils/ResponsiveRules';
 import {
   canApplyTicketAction,
@@ -28,6 +29,17 @@ export default function businessSmokeTest() {
       expect(canApplyTicketAction(TicketOrderStatus.PENDING_PAYMENT, TicketOrderAction.PAY)).assertTrue();
       expect(transitionTicketOrderStatus(TicketOrderStatus.PENDING_PAYMENT, TicketOrderAction.PAY))
         .assertEqual(TicketOrderStatus.PAID);
+    });
+
+    it('guardsTouristRegistrationInputs', 0, () => {
+      expect(validateRegistrationInput('新游客', 'new_visitor', 'Visitor123', 'Visitor123').valid)
+        .assertTrue();
+      expect(validateRegistrationInput('新游客', 'NewVisitor', 'Visitor123', 'Visitor123').valid)
+        .assertFalse();
+      expect(validateRegistrationInput('新游客', 'new_visitor', 'password', 'password').valid)
+        .assertFalse();
+      expect(validateRegistrationInput('新游客', 'new_visitor', 'Visitor123', 'Visitor456').valid)
+        .assertFalse();
     });
 
     it('keepsEmergencyAndOfflineFailuresSafe', 0, () => {

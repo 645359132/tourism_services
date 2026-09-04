@@ -23,7 +23,7 @@ from app.db.models.user import User
 from app.db.session import get_session
 from app.main import create_app
 from app.scripts.seed import DEMO_PASSWORD, seed_database
-from app.services.auth import rotate_refresh_token
+from app.services.auth import register_tourist_and_issue, rotate_refresh_token
 
 
 @dataclass(slots=True)
@@ -79,6 +79,7 @@ def auth_harness(tmp_path_factory: pytest.TempPathFactory) -> Iterator[AuthHarne
         database_url=database_url,
         jwt_secret_key="test-suite-jwt-secret-9f6c4abed56a7b31",
         enable_demo_accounts=True,
+        rate_limit_auth_requests=1000,
         log_level="CRITICAL",
     )
     application = create_app(settings)
@@ -108,8 +109,211 @@ def _login(client: TestClient, username: str, password: str = DEMO_PASSWORD):
     )
 
 
+def _register(
+    client: TestClient,
+    username: str,
+    *,
+    display_name: str = "New Tourist",
+    password: str = "NewTourist123",
+    **extra: object,
+):
+    return client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": username,
+            "display_name": display_name,
+            "password": password,
+            **extra,
+        },
+    )
+
+
 def _bearer(access_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
+
+
+def test_register_creates_hashed_tourist_and_authenticated_session(
+    auth_harness: AuthHarness,
+) -> None:
+    password = "FirstVisitor123"
+    response = _register(
+        auth_harness.client,
+        "first_visitor",
+        display_name="First Visitor",
+        password=password,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["user"]["username"] == "first_visitor"
+    assert body["user"]["display_name"] == "First Visitor"
+    assert body["user"]["roles"] == ["tourist"]
+    assert password not in response.text
+    assert "password_hash" not in response.text
+
+    authenticated = auth_harness.client.get(
+        "/api/v1/users/me",
+        headers=_bearer(body["access_token"]),
+    )
+    assert authenticated.status_code == 200
+    assert authenticated.json()["username"] == "first_visitor"
+
+    async def read_user() -> User:
+        async with auth_harness.session_factory() as session:
+            user = await session.scalar(select(User).where(User.username == "first_visitor"))
+            assert user is not None
+            return user
+
+    stored_user = asyncio.run(read_user())
+    assert stored_user.password_hash != password
+    assert stored_user.password_hash.startswith("$argon2id$")
+    assert verify_password(password, stored_user.password_hash)
+
+    login = _login(auth_harness.client, "first_visitor", password)
+    assert login.status_code == 200
+    rotated = auth_harness.client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": body["refresh_token"]},
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["user"]["username"] == "first_visitor"
+
+
+def test_register_normalizes_username_and_display_name(auth_harness: AuthHarness) -> None:
+    response = _register(
+        auth_harness.client,
+        "  Mixed_Case_42  ",
+        display_name="  Mixed Case Visitor  ",
+    )
+
+    assert response.status_code == 201
+    assert response.json()["user"] == {
+        "id": response.json()["user"]["id"],
+        "username": "mixed_case_42",
+        "display_name": "Mixed Case Visitor",
+        "roles": ["tourist"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("username", "display_name", "password"),
+    [
+        ("ab", "Visitor", "Password1"),
+        ("not-allowed", "Visitor", "Password1"),
+        ("游客账号", "Visitor", "Password1"),
+        ("valid_name", "   ", "Password1"),
+        ("valid_name", "Visitor", "short1"),
+        ("valid_name", "Visitor", "abcdefgh"),
+        ("valid_name", "Visitor", "12345678"),
+        ("valid_name", "Visitor", "a" * 128 + "1"),
+    ],
+)
+def test_register_rejects_invalid_fields(
+    auth_harness: AuthHarness,
+    username: str,
+    display_name: str,
+    password: str,
+) -> None:
+    response = _register(
+        auth_harness.client,
+        username,
+        display_name=display_name,
+        password=password,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert password not in response.text
+
+
+def test_register_rejects_role_injection(auth_harness: AuthHarness) -> None:
+    response = _register(auth_harness.client, "role_injector", role="admin")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert _login(auth_harness.client, "role_injector", "NewTourist123").status_code == 401
+
+
+def test_register_duplicate_username_is_a_stable_conflict(
+    auth_harness: AuthHarness,
+) -> None:
+    first = _register(auth_harness.client, "duplicate_visitor")
+    duplicate = _register(
+        auth_harness.client,
+        " DUPLICATE_VISITOR ",
+        display_name="Another Visitor",
+        password="DifferentPassword456",
+    )
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"] == {
+        "code": "USERNAME_TAKEN",
+        "message": "Username is already registered",
+    }
+    assert "DifferentPassword456" not in duplicate.text
+
+
+def test_concurrent_duplicate_registration_has_one_winner(
+    auth_harness: AuthHarness,
+) -> None:
+    async def race_registrations() -> list[str]:
+        async def attempt(display_name: str) -> str:
+            async with auth_harness.session_factory() as session:
+                try:
+                    result = await register_tourist_and_issue(
+                        session,
+                        username="concurrent_visitor",
+                        display_name=display_name,
+                        password="ConcurrentVisitor123",
+                        settings=auth_harness.settings,
+                    )
+                    return result.user.username
+                except AppError as exc:
+                    return exc.code
+
+        return list(await asyncio.gather(attempt("First"), attempt("Second")))
+
+    outcomes = asyncio.run(race_registrations())
+    assert outcomes.count("concurrent_visitor") == 1
+    assert outcomes.count("USERNAME_TAKEN") == 1
+
+
+def test_register_fails_closed_when_tourist_role_is_missing(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "missing-role.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    engine = create_async_engine(database_url)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def prepare_database() -> None:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+    asyncio.run(prepare_database())
+    settings = Settings(
+        app_env="test",
+        database_url=database_url,
+        jwt_secret_key="test-suite-jwt-secret-missing-role-12345",
+        log_level="CRITICAL",
+    )
+    application = create_app(settings)
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    with TestClient(application) as client:
+        response = _register(client, "no_role_visitor")
+
+    asyncio.run(engine.dispose())
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "REGISTRATION_UNAVAILABLE",
+        "message": "Registration is temporarily unavailable",
+    }
 
 
 def test_login_matches_client_contract(auth_harness: AuthHarness) -> None:

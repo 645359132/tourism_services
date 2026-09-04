@@ -21,6 +21,8 @@ from app.core.coordination import (
     RedisCoordinationBackend,
     ReferenceCache,
 )
+from app.core.middleware import RateLimitMiddleware
+from app.core.security import create_access_token
 from app.main import create_app
 from app.realtime.crowd import ConnectionHub, CrowdPublisher
 from app.realtime.queues import QueueConnectionHub, QueuePublisher, QueueTicketStore
@@ -506,6 +508,60 @@ def _add_probe_route(application: FastAPI) -> None:
     @application.get("/api/v1/runtime-boom")
     async def runtime_boom() -> None:
         raise RuntimeError("expected test failure")
+
+
+def test_registration_uses_the_stricter_auth_rate_limit_bucket() -> None:
+    settings = _runtime_settings()
+    application = FastAPI()
+    application.state.settings = settings
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/auth/register",
+            "headers": [],
+            "query_string": b"",
+            "app": application,
+        }
+    )
+
+    assert RateLimitMiddleware._selected_limit(request) == (
+        "auth",
+        settings.rate_limit_auth_requests,
+    )
+
+
+def test_auth_rate_limit_cannot_be_bypassed_with_a_bearer_subject() -> None:
+    settings = Settings(
+        app_env="test",
+        jwt_secret_key="test-auth-rate-limit-secret-123456789",
+        rate_limit_auth_requests=1,
+        log_level="CRITICAL",
+    )
+    backend = TrackingBackend()
+    application = FastAPI()
+    application.state.settings = settings
+    application.state.rate_limit_backend = backend
+    application.state.local_coordination = LocalCoordinationBackend()
+    application.add_middleware(RateLimitMiddleware)
+
+    @application.post("/api/v1/auth/register")
+    async def registration_probe() -> dict[str, bool]:
+        return {"ok": True}
+
+    access_token, _ = create_access_token(uuid4(), ["tourist"], settings)
+    with TestClient(application) as client:
+        first = client.post("/api/v1/auth/register")
+        bypass_attempt = client.post(
+            "/api/v1/auth/register",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    assert first.status_code == 200
+    assert bypass_attempt.status_code == 429
+    assert bypass_attempt.json()["error"]["code"] == "RATE_LIMITED"
+    assert len(backend.rate_requests) == 2
+    assert backend.rate_requests[0]["key"] == backend.rate_requests[1]["key"]
 
 
 def test_full_mode_lifecycle_rate_limit_security_and_host_guard() -> None:

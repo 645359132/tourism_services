@@ -154,6 +154,59 @@ class SmokeRunner:
         if "roles" not in require_object(capabilities, label="capability metadata"):
             raise SmokeFailure("capability metadata: roles were missing")
 
+        registration_username = f"smoke_{self.run_id[:24]}"
+        registration_password = f"Smoke{self.run_id[:16]}9"
+        _, registration_payload = self._request(
+            "POST",
+            "/api/v1/auth/register",
+            label="tourist registration",
+            expected_status=201,
+            json={
+                "username": registration_username,
+                "display_name": "Smoke Visitor",
+                "password": registration_password,
+            },
+        )
+        registration = require_object(registration_payload, label="tourist registration")
+        registered_user = require_object(registration.get("user"), label="registered tourist")
+        registered_token = registration.get("access_token")
+        if registered_user.get("username") != registration_username or registered_user.get(
+            "roles"
+        ) != ["tourist"]:
+            raise SmokeFailure("tourist registration: expected a normalized tourist identity")
+        if not isinstance(registered_token, str) or not registered_token:
+            raise SmokeFailure("tourist registration: access_token was missing")
+
+        _, registered_profile = self._request(
+            "GET",
+            "/api/v1/users/me",
+            label="registered tourist session",
+            token=registered_token,
+        )
+        if (
+            require_object(registered_profile, label="registered tourist session").get("username")
+            != registration_username
+        ):
+            raise SmokeFailure("registered tourist session: wrong user returned")
+
+        _, duplicate_payload = self._request(
+            "POST",
+            "/api/v1/auth/register",
+            label="duplicate registration conflict",
+            expected_status=409,
+            json={
+                "username": registration_username.upper(),
+                "display_name": "Duplicate Visitor",
+                "password": "DifferentVisitor456",
+            },
+        )
+        duplicate_error = require_object(
+            require_object(duplicate_payload, label="duplicate registration conflict").get("error"),
+            label="duplicate registration error",
+        )
+        if duplicate_error.get("code") != "USERNAME_TAKEN":
+            raise SmokeFailure("duplicate registration conflict: wrong error code")
+
         self.tourist_token = self._login(
             self.config.username,
             self.config.password,
