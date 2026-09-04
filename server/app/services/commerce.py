@@ -215,9 +215,12 @@ async def _ensure_cart(session: AsyncSession, user_id: UUID) -> Cart:
     values = {"id": uuid4(), "user_id": user_id, "version": 1}
     if bind.dialect.name == "sqlite":
         # End the read transaction before requesting SQLite's single writer
-        # lock. This path is reached only for a genuinely missing cart.
+        # lock, then release it before the caller performs follow-up work.
+        # This path is reached only for a genuinely missing cart, and the
+        # conflict-safe insert makes the early commit idempotent.
         await session.rollback()
         await session.execute(sqlite_insert(Cart).values(**values).on_conflict_do_nothing())
+        await session.commit()
     elif bind.dialect.name == "postgresql":
         await session.execute(
             postgresql_insert(Cart)

@@ -22,6 +22,8 @@ def test_production_rejects_development_jwt_secret() -> None:
     with pytest.raises(ValidationError, match="Production JWT_SECRET_KEY"):
         Settings(
             app_env="production",
+            enable_demo_accounts=False,
+            jwt_secret_key="development-only-jwt-secret-key-change-me-32",
             cors_origins=["https://client.example"],
             trusted_hosts=["api.example"],
         )
@@ -42,6 +44,7 @@ def test_production_accepts_non_placeholder_secret() -> None:
     settings = Settings(
         app_env="production",
         jwt_secret_key="7c96be81bb8a4eb585409088de919e66",
+        enable_demo_accounts=False,
         cors_origins=["https://client.example"],
         trusted_hosts=["api.example"],
     )

@@ -14,7 +14,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from starlette.websockets import WebSocketDisconnect
 
@@ -40,7 +40,7 @@ from app.db.models.engagement import (
 )
 from app.db.models.role import Role, UserRole
 from app.db.models.user import User
-from app.db.session import get_session
+from app.db.session import _configure_sqlite_engine, get_session
 from app.main import create_app
 from app.schemas.commerce import DeliveryRequest
 from app.scripts.seed import DEMO_PASSWORD, seed_database
@@ -64,6 +64,7 @@ def cp7_harness(
     database_path: Path = tmp_path_factory.mktemp("cp7") / "cp7.db"
     database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
     engine = create_async_engine(database_url)
+    _configure_sqlite_engine(engine, database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def prepare() -> None:
@@ -78,6 +79,8 @@ def cp7_harness(
                 "cp7_checkout_one",
                 "cp7_checkout_two",
                 "cp7_group_late",
+                "cp9_cart_lock_one",
+                "cp9_cart_lock_two",
             ):
                 user = User(
                     username=username,
@@ -351,10 +354,6 @@ def test_existing_cart_lookup_does_not_request_sqlite_write_lock(
             cp7_harness.session_factory() as writer,
             cp7_harness.session_factory() as reader,
         ):
-            await writer.execute(text("PRAGMA busy_timeout=25"))
-            await writer.commit()
-            await reader.execute(text("PRAGMA busy_timeout=25"))
-            await reader.commit()
             await writer.execute(
                 update(Cart).where(Cart.id == cart_id).values(version=Cart.version + 1)
             )
@@ -366,6 +365,36 @@ def test_existing_cart_lookup_does_not_request_sqlite_write_lock(
                 await writer.rollback()
 
     assert asyncio.run(lookup_while_another_writer_is_active())
+
+
+def test_new_sqlite_cart_releases_write_lock_before_followup_work(
+    cp7_harness: Checkpoint7Harness,
+) -> None:
+    async def create_two_carts() -> tuple[UUID, UUID]:
+        async with cp7_harness.session_factory() as setup:
+            user_ids = list(
+                await setup.scalars(
+                    select(User.id)
+                    .where(User.username.in_(("cp9_cart_lock_one", "cp9_cart_lock_two")))
+                    .order_by(User.username)
+                )
+            )
+        assert len(user_ids) == 2
+
+        async with (
+            cp7_harness.session_factory() as first,
+            cp7_harness.session_factory() as second,
+        ):
+            try:
+                first_cart = await _ensure_cart(first, user_ids[0])
+                second_cart = await _ensure_cart(second, user_ids[1])
+                return first_cart.id, second_cart.id
+            finally:
+                await first.rollback()
+                await second.rollback()
+
+    first_cart_id, second_cart_id = asyncio.run(create_two_carts())
+    assert first_cart_id != second_cart_id
 
 
 def test_five_unique_users_can_add_and_checkout_one_product_concurrently(
