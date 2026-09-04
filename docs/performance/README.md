@@ -60,10 +60,48 @@ and login at 371.28 ms. A longer run is required before treating endpoint percen
   Uvicorn was then restarted for the measured workload with the normal 30-second crowd and
   15-second queue publisher intervals.
 
-Docker 29.1.3 was installed and `docker compose config --quiet` passed. The Desktop Linux daemon
-was not running: the named-pipe endpoint
-`//./pipe/dockerDesktopLinuxEngine` did not exist. Consequently, this checkpoint could not execute
-the API + PostgreSQL + Redis Compose topology. The local result must not be extrapolated to it.
+Docker 29.1.3 and Compose 2.40.3 later ran the complete API + PostgreSQL + Redis topology on the
+same machine. That companion run is recorded separately below so the original SQLite measurement
+and the full-mode measurement remain distinguishable.
+
+## PostgreSQL + Redis Compose companion run
+
+On 2026-09-04, the API image was rebuilt and started with PostgreSQL 16, Redis 7, Redis-required
+coordination, and two Uvicorn workers. PostgreSQL migrated transactionally from an empty database
+to revision `20260901_0007`; a repeated upgrade was a no-op, `alembic check` found no drift, and
+two further seed runs were idempotent. All three containers remained healthy, Redis returned PONG,
+the API restart count stayed zero, and the real-network acceptance runner passed all 46 checks.
+
+The same stack then ran the bounded five-user workload:
+
+| Measure | Observed |
+|---|---:|
+| Concurrent users / duration | 5 / 30 s |
+| Requests in the CSV summary | 319 |
+| Failures | 0 (0.00%) |
+| Throughput | 11.33 requests/s |
+| Mean response time | 32.76 ms |
+| p50 / p90 / p95 / p99 | 17 / 82 / 130 / 350 ms |
+| Maximum response time | 367.80 ms |
+| Crowd WebSocket exchanges | 30, all successful |
+
+Locust's terminal summary included five requests completed after the CSV snapshot during graceful
+shutdown: 324 requests, zero failures, and 11.29 requests/s. The checksummed CSV is the canonical
+measurement. Each of five distinct load identities completed ticket order/payment, reservation/
+confirmation, and cart/checkout/payment before entering the browse/WebSocket mix.
+
+Compose evidence:
+
+- [`compose-5u-30s_stats.csv`](compose-5u-30s_stats.csv)
+- [`compose-5u-30s_stats_history.csv`](compose-5u-30s_stats_history.csv)
+- [`compose-5u-30s_failures.csv`](compose-5u-30s_failures.csv)
+- [`compose-5u-30s_exceptions.csv`](compose-5u-30s_exceptions.csv)
+- [`compose-5u-30s_SHA256SUMS.txt`](compose-5u-30s_SHA256SUMS.txt)
+
+The host already ran a Windows PostgreSQL service on port 5432, so Compose published its database
+as `127.0.0.1:15432`; service-to-service traffic still used `postgres:5432`. Full reproduction and
+PowerShell 5.1-compatible secret generation are in the
+[acceptance guide](../testing/acceptance.md#4-docker-compose静态与运行时边界).
 
 ## Reproduction
 
@@ -127,9 +165,8 @@ a comparable inventory baseline; recreate the isolated database for a new measur
 
 ## Interpretation
 
-This run establishes that the scenario is feasible and observable on one developer machine: every
-required workflow appeared in the statistics, the run exited successfully, there were no request
-failures, and the aggregate p95 was 160 ms. It does **not** establish a service-level objective,
-saturation point, multi-process correctness, long-lived WebSocket capacity, PostgreSQL behavior,
-Redis behavior, or support for 10,000 simultaneous users. Those are explicit steps in the
-[10,000-online capacity plan](10k-capacity-plan.md).
+The SQLite run establishes that the fallback scenario is feasible and observable; the Compose
+companion additionally exercises PostgreSQL, Redis coordination, and two workers at the same small
+load. Neither result establishes a service-level objective, saturation point, long-lived WebSocket
+capacity, public-network behavior, or support for 10,000 simultaneous users. Those remain explicit
+steps in the [10,000-online capacity plan](10k-capacity-plan.md).

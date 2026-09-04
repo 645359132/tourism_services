@@ -197,7 +197,7 @@ uv run locust -f load/locustfile.py `
   --csv $reproPrefix --csv-full-history --only-summary
 ```
 
-该命令把个人复验输出放到临时目录，不会覆盖仓库中的签名基线。完整隔离规则、场景约束和结果解释见[本地容量基线](docs/performance/README.md)。
+该命令把个人复验输出放到临时目录，不会覆盖仓库中的基准证据。完整隔离规则、场景约束和结果解释见[本地容量基线](docs/performance/README.md)。
 
 ## PostgreSQL + Redis Compose 完整模式
 
@@ -207,16 +207,21 @@ uv run locust -f load/locustfile.py `
 
 ```powershell
 $env:POSTGRES_PASSWORD = 'local-tourism-db-password'
+$env:POSTGRES_PORT = '15432'
 $env:JWT_SECRET_KEY = 'local-compose-evaluator-secret-at-least-32-bytes'
 $env:ENABLE_DEMO_ACCOUNTS = 'true'
 
 docker compose config --quiet
-docker compose up --build --detach
+docker compose up --build --detach --wait --wait-timeout 180
 docker compose ps
 Invoke-RestMethod http://127.0.0.1:8000/health
+
+Set-Location server
+uv run tourism-smoke --base-url http://127.0.0.1:8000 --timeout 45
+Set-Location ..
 ```
 
-服务可用后访问 <http://127.0.0.1:8000/health> 和 <http://127.0.0.1:8000/docs>。`docker compose down` 会停止容器并保留命名卷；不要在需要保留数据时附加 `-v`。生产部署还必须使用密钥管理、HTTPS、明确的 CORS/Trusted Hosts 和受管 PostgreSQL/Redis，而不是示例凭据。
+服务可用后访问 <http://127.0.0.1:8000/health> 和 <http://127.0.0.1:8000/docs>。示例把 PostgreSQL 的宿主机端口放在 `15432`，容器内 API 仍连接 `postgres:5432`，可避开本机 PostgreSQL 常见的 `5432` 冲突。`docker compose down` 会停止容器并保留命名卷；不要在需要保留数据时附加 `-v`。生产部署还必须使用密钥管理、HTTPS、明确的 CORS/Trusted Hosts 和受管 PostgreSQL/Redis，而不是示例凭据。
 
 ## 架构
 
@@ -293,14 +298,15 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 | 检查 | 已接受结果 |
 |---|---|
-| 服务端 pytest | 129 tests passed；分支覆盖率 72.75%，通过 `>= 70%` 门禁 |
+| 服务端 pytest | 130 tests passed；分支覆盖率 72.65%，通过 `>= 70%` 门禁；包含 PostgreSQL 离线 DDL 门禁 |
 | Ruff | `uv run ruff check .` 通过 |
 | HarmonyOS 本地业务测试 | Hvigor `test`：37 passed，Failure 0，Error 0 |
-| 真实网络 smoke | 46/46 checks；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
+| 真实网络 smoke | SQLite 与 PostgreSQL + Redis 双 worker 均为 46/46；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
 | Locust 本机基线 | 5 users / 30 s；CSV 320 requests、0 failures、11.42 req/s、aggregate p95 160 ms |
+| Locust Compose 基线 | PostgreSQL 16 + Redis 7 + 双 worker；CSV 319 requests、0 failures、11.33 req/s、aggregate p95 130 ms |
 | HarmonyOS 编译 | `entry@default` debug HAP 与 `entry@ohosTest` debug HAP 均构建成功 |
 | Code Linter | 仓库配置启用的 TypeScript/security recommended 规则执行且零缺陷 |
-| Compose | `docker compose config --quiet` 静态校验通过 |
+| Compose | API/PostgreSQL/Redis 均 healthy；空库迁移至 `0007`、重复迁移/seed、schema drift、Redis PONG 均通过 |
 
 详细证据与复验范围：
 
@@ -309,11 +315,10 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 - [本地性能基线与原始 CSV](docs/performance/README.md)
 - [10,000 在线容量验证计划](docs/performance/10k-capacity-plan.md)
 
-本机 Locust 结果是开发机可重复基线，不是 10,000 在线、生产 SLO、PostgreSQL/Redis 或公网性能声明。
+两组本机 Locust 结果都是开发机可重复基线，不是 10,000 在线、生产 SLO 或公网性能声明。
 
 ### 当前需要外部环境完成的验证
 
-- 当前 Docker Desktop Linux daemon 不可用，因此完整 Compose 拓扑只完成了静态配置验证；启动 daemon 后按上文完整模式复验。
 - `hdc list targets` 当前返回 `[Empty]`，仓库也不保存签名材料；设备 `ohosTest` 和 phone/tablet 人工矩阵需要连接目标并在 DevEco Studio 配置本地签名后执行。
 - 当前 DevEco `arkPerfCheck` 扩展会在六个大型 ArkUI 文件上触发内部 `getDeclaringMethod` 异常；已接受门禁是实际执行且零缺陷的 TypeScript/security 规则、ArkTS 编译和设备矩阵。升级检查器后应重跑 cross-device/性能扩展。
 
@@ -327,3 +332,4 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 - **Hvigor 找不到 SDK 或 HAP 无法安装**：设置 `DEVECO_SDK_HOME`；CLI 编译产物未签名时，在 DevEco Studio 配置本地签名并选择已连接的 hdc 目标。
 - **Code Linter 把项目当成 SDK**：保持命令中的参数顺序——OpenHarmony SDK 路径在前，项目目录 `.` 在最后；`arkPerfCheck` 的已知内部异常不等于 TypeScript/security 门禁失败。
 - **Compose 无法连接 daemon**：先启动 Docker Desktop 的 Linux engine，以 `docker info` 确认 daemon 可用，再运行 `docker compose up --build`。
+- **PostgreSQL 端口绑定失败**：本机服务占用 `5432` 时，设置 `$env:POSTGRES_PORT = '15432'` 后重新执行 Compose；这不会改变容器内的 `postgres:5432`。

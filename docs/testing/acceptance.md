@@ -14,11 +14,12 @@
 | 空库迁移 | 对同一新库执行两次 `uv run alembic upgrade head` | 首次到 head，第二次无新增迁移 | 通过 |
 | 应用种子 | 对同一库执行两次 `uv run tourism-seed` | 首次 applied，第二次 already applied | 通过 |
 | Python lint | `uv run ruff check .` | 0 错误 | 通过 |
-| 服务端测试/覆盖率 | `uv run pytest`；配置内置 branch coverage 和 `fail_under=70` | 129 passed，覆盖率 72.75%，通过 70% 门禁 | 通过 |
-| 真实网络 smoke | 独立 Uvicorn + `uv run tourism-smoke` | 46/46，含 3 条 WebSocket 契约 | 通过 |
-| Locust 本机基线 | 已签名 CSV 证据 | 320 请求、0 失败、11.42 req/s、aggregate p95 160 ms | 通过（仅本机基线） |
+| 服务端测试/覆盖率 | `uv run pytest`；配置内置 branch coverage 和 `fail_under=70` | 130 passed，覆盖率 72.65%，含 PostgreSQL 离线 DDL 门禁 | 通过 |
+| 真实网络 smoke | 独立 Uvicorn + `uv run tourism-smoke` | SQLite 与 Compose 均 46/46，含 3 条 WebSocket 契约 | 通过 |
+| Locust 本机基线 | SHA-256 校验的 CSV 证据 | 320 请求、0 失败、11.42 req/s、aggregate p95 160 ms | 通过（仅本机基线） |
 | Compose 静态边界 | `docker compose config --quiet` | 退出码 0 | 通过 |
-| Compose 运行时 | API + PostgreSQL + Redis | Docker Desktop Linux daemon 不可用 | 待环境复验 |
+| Compose 运行时 | API + PostgreSQL 16 + Redis 7，双 Uvicorn worker | 三个服务 healthy；空库到 `0007`、重复迁移/seed、drift、Redis PONG、health/docs 均通过 | 通过 |
+| Compose Locust | 独立的 SHA-256 校验 CSV | 5 users / 30 s；319 请求、0 失败、11.33 req/s、aggregate p95 130 ms | 通过（仅本机基线） |
 | OHPM 依赖与 lock | `ohpm install` 并检查 `client/oh-package-lock.json5` | 安装退出码 0；仅公开 `@ohos/hypium@1.0.25` 地址、版本和 integrity，无本机路径 | 通过 |
 | DevEco Code Linter | 本文给出的两个位置参数命令 | `No defects found`，Errors/Warns/Suggestions 均为 0 | 通过（支持的规则集） |
 | Hypium 本地测试 | `entry@default` Hvigor test | 37 passed，Failure 0，Error 0 | 通过 |
@@ -73,7 +74,7 @@ uv run pytest
 - `alembic current` 应指向 head；第二次 upgrade 不创建另一套 schema。
 - 两次 seed 后业务目录、库存、演示账号与离线 manifest 不重复；第二次输出
   `Application seed already applied.`。
-- canonical `uv run pytest` 已通过 129 个测试，分支覆盖率 72.75%；`server/pyproject.toml` 自动追加
+- canonical `uv run pytest` 已通过 130 个测试，分支覆盖率 72.65%；`server/pyproject.toml` 自动追加
   strict config/markers、隔离 basetemp、`--cov=app` 和 missing-lines 报告，并对 branch
   coverage 施加 70% 下限。不要用省略 coverage addopts 的局部命令代替最终门禁。
 
@@ -202,39 +203,95 @@ uv run locust -f load/locustfile.py `
 docker compose config --quiet
 ```
 
-该检查已通过，只证明 Compose 合并/插值有效；不证明镜像能构建、容器能启动、迁移能在
-PostgreSQL 上成功、Redis 协调健康或多 worker 正确。
-
-当前机器的 Docker Desktop Linux daemon 不可用，命名管道
-`//./pipe/dockerDesktopLinuxEngine` 不存在，因此 API + PostgreSQL + Redis
-运行时拓扑尚未验收。daemon 可用后，使用本地 secret 在仓库根目录执行以下待验步骤：
+静态检查本身只证明 Compose 合并/插值有效。2026-09-04 的接受运行进一步使用真实
+Docker Desktop Linux engine 验证了 PostgreSQL 16、Redis 7 和两个 Uvicorn worker。
+本机 Windows PostgreSQL 服务占用 `5432`，因此接受运行将宿主机端口改为 `15432`；
+容器内 API 仍连接 `postgres:5432`。下面使用唯一 project name 创建独立命名卷，保证
+每次从空库开始，也避免复用旧卷时任意更换 `POSTGRES_PASSWORD` 导致凭据不一致。
+运行前应停止占用 8000、15432、16379 的其他测试栈：
 
 ```powershell
+$composeProject = "smart-tourism-acceptance-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
 $env:APP_ENV = 'development'
 $env:ENABLE_DEMO_ACCOUNTS = 'true'
-$env:COMPOSE_PROJECT_NAME = "smart-tourism-acceptance-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
-$env:JWT_SECRET_KEY = [Convert]::ToBase64String(
-  [Security.Cryptography.RandomNumberGenerator]::GetBytes(48)
-)
-$postgresSecret = Read-Host 'Local PostgreSQL password' -AsSecureString
-$env:POSTGRES_PASSWORD = [Net.NetworkCredential]::new('', $postgresSecret).Password
+$env:API_PORT = '8000'
+$env:POSTGRES_USER = 'tourism'
+$env:POSTGRES_DB = 'tourism'
+$env:POSTGRES_PORT = '15432'
+$env:REDIS_PORT = '16379'
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$jwtBytes = New-Object byte[] 48
+$postgresBytes = New-Object byte[] 24
+try {
+  $rng.GetBytes($jwtBytes)
+  $rng.GetBytes($postgresBytes)
+  $env:JWT_SECRET_KEY = [Convert]::ToBase64String($jwtBytes)
+  $env:POSTGRES_PASSWORD = -join ($postgresBytes | ForEach-Object { $_.ToString('x2') })
+} finally {
+  $rng.Dispose()
+}
 
-docker compose config --quiet
-docker compose up --build --detach --wait --wait-timeout 120
-docker compose ps
+docker compose -p $composeProject config --quiet
+docker compose -p $composeProject up --build --detach --wait --wait-timeout 180
+docker compose -p $composeProject ps
+
+$apiContainer = docker compose -p $composeProject ps -q api
+docker inspect --format 'health={{.State.Health.Status}} restarts={{.RestartCount}}' $apiContainer
 Invoke-RestMethod http://127.0.0.1:8000/health
+"docs_status=$((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/docs).StatusCode)"
+
+docker compose -p $composeProject exec -T api uv run --no-sync alembic upgrade head
+docker compose -p $composeProject exec -T api uv run --no-sync alembic current
+docker compose -p $composeProject exec -T api uv run --no-sync alembic check
+docker compose -p $composeProject exec -T api uv run --no-sync tourism-seed
+docker compose -p $composeProject exec -T api uv run --no-sync tourism-seed
+docker compose -p $composeProject exec -T redis redis-cli ping
+docker compose -p $composeProject exec -T postgres psql -U tourism -d tourism -tAc `
+  "SELECT version_num FROM alembic_version; SELECT count(*) FROM pg_tables WHERE schemaname='public';"
 
 Set-Location server
 $env:UV_CACHE_DIR = (Join-Path (Resolve-Path ..).Path '.uv-cache')
-uv run tourism-smoke --base-url http://127.0.0.1:8000 --timeout 10
-Set-Location ..
+uv sync --frozen
+uv run tourism-smoke --base-url http://127.0.0.1:8000 --timeout 45
 
-docker compose down --volumes
+$loadSecret = Read-Host 'Synthetic load-user password (at least 12 characters)' -AsSecureString
+$loadPassword = [Net.NetworkCredential]::new('', $loadSecret).Password
+docker compose -f ..\docker-compose.yml -p $composeProject exec -T `
+  -e "TOURISM_LOAD_USER_PASSWORD=$loadPassword" `
+  api uv run --no-sync tourism-load-seed --count 10
+$env:TOURISM_LOAD_USER_PASSWORD = $loadPassword
+$env:TOURISM_LOAD_USER_COUNT = '10'
+$env:TOURISM_LOAD_USER_OFFSET = '0'
+$reproPrefix = Join-Path $env:TEMP ("tourism-compose-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+uv run locust -f load/locustfile.py `
+  --host http://127.0.0.1:8000 `
+  --headless --users 5 --spawn-rate 5 --run-time 30s --stop-timeout 5 `
+  --csv $reproPrefix --csv-full-history --only-summary
+Import-Csv "${reproPrefix}_stats.csv" | Where-Object Name -eq 'Aggregated'
+if ((Import-Csv "${reproPrefix}_failures.csv").Count -ne 0) { throw 'Locust failures found' }
+if ((Import-Csv "${reproPrefix}_exceptions.csv").Count -ne 0) { throw 'Locust exceptions found' }
+Set-Location ..
 ```
 
-接受条件是三个服务均 healthy、迁移和 seed 成功、health 为 200、46-check smoke
-通过，且 Redis-required 模式没有 local-degraded 标记。生产部署还必须使用 secret
-manager、HTTPS、显式 CORS/trusted hosts，并关闭 demo accounts。
+接受结果：三个服务均 healthy 且 API restart count 为 0；PostgreSQL 从空库迁移到
+`20260901_0007 (head)`，共有 76 张业务表（另有 `alembic_version`），重复 upgrade
+无操作、`alembic check` 无 drift、重复 seed 输出 already applied；health/docs 为 200，
+Redis 返回 PONG，46-check smoke 通过。随后 5 users / 30 s 的 Compose Locust CSV
+记录 319 请求、0 失败、11.33 req/s、p95 130 ms、p99 350 ms、最大 367.80 ms；
+终端在 graceful shutdown 后为 324 请求、0 失败。原始文件与 SHA-256 见
+[`docs/performance/README.md`](../performance/README.md)。这些结果仍不是生产 SLO 或
+10,000 在线容量声明。生产部署还必须使用 secret manager、HTTPS、显式 CORS/trusted
+hosts，并关闭 demo accounts。
+
+完成上述独立验收后，以下命令只删除本次唯一 project 的容器、网络和测试卷；确认
+`$composeProject` 仍是本次生成的值后再执行：
+
+```powershell
+docker compose -p $composeProject down --volumes
+```
+
+日常项目若需要保留数据则使用 `docker compose down`，并在后续启动时沿用初始化该卷的
+`POSTGRES_PASSWORD`。
 
 ## 5. HarmonyOS 客户端 CLI
 
