@@ -1,12 +1,16 @@
 """Database safety configuration tests."""
 
+import re
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.config import Settings
+from alembic import command
+from app.core.config import Settings, get_settings
 from app.db import session as database
 from app.db.session import _configure_sqlite_engine
 
@@ -60,3 +64,32 @@ def test_postgres_engine_uses_configured_pool(monkeypatch: pytest.MonkeyPatch) -
         "pool_timeout": 11.0,
         "pool_recycle": 900,
     }
+
+
+def test_postgres_offline_migrations_have_typed_boolean_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject DDL such as ``BOOLEAN DEFAULT 1`` that PostgreSQL cannot apply."""
+
+    server_root = Path(__file__).resolve().parents[1]
+    output = StringIO()
+    config = Config(str(server_root / "alembic.ini"), output_buffer=output)
+    config.set_main_option("script_location", str(server_root / "alembic"))
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://tourism:unused@postgres:5432/tourism",
+    )
+    get_settings.cache_clear()
+    try:
+        command.upgrade(config, "head", sql=True)
+    finally:
+        get_settings.cache_clear()
+
+    postgres_sql = output.getvalue()
+    invalid_default = re.compile(r"\bBOOLEAN\s+DEFAULT\s+[01](?=\s|,)", re.IGNORECASE)
+    invalid_lines = [
+        line.strip() for line in postgres_sql.splitlines() if invalid_default.search(line)
+    ]
+
+    assert "CREATE TABLE faqs" in postgres_sql
+    assert invalid_lines == []

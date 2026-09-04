@@ -28,8 +28,8 @@ def upgrade() -> None:
         sa.Column("severity", sa.String(length=20), nullable=False),
         sa.Column("starts_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("ends_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.CheckConstraint(
             "severity IN ('INFO', 'WARNING', 'CRITICAL')",
             name=op.f("ck_emergency_bulletins_valid_severity"),
@@ -47,8 +47,8 @@ def upgrade() -> None:
         sa.Column("description", sa.String(length=800), nullable=False),
         sa.Column("points_award", sa.Integer(), nullable=False),
         sa.Column("evidence_hint", sa.String(length=300), nullable=False),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.CheckConstraint(
             "kind IN ('TRANSPORT', 'REFILL', 'CULTURE', 'RECYCLE')",
             name=op.f("ck_green_tasks_valid_kind"),
@@ -67,8 +67,8 @@ def upgrade() -> None:
         sa.Column("manifest_hash", sa.String(length=64), nullable=False),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.CheckConstraint(
             "expires_at IS NULL OR expires_at > published_at",
             name=op.f("ck_offline_packs_expiry_after_publish"),
@@ -116,7 +116,7 @@ def upgrade() -> None:
         sa.Column("idempotency_key", sa.String(length=128), nullable=False),
         sa.Column("request_hash", sa.String(length=64), nullable=False),
         sa.Column("provider", sa.String(length=50), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column(
             "completed_at",
             sa.DateTime(timezone=True),
@@ -188,7 +188,7 @@ def upgrade() -> None:
         sa.Column("title", sa.String(length=160), nullable=False),
         sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column("size_bytes", sa.Integer(), nullable=False),
-        sa.Column("required", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("required", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("payload", sa.JSON(), nullable=False),
         sa.CheckConstraint("size_bytes >= 0", name=op.f("ck_offline_assets_size_nonnegative")),
         sa.ForeignKeyConstraint(
@@ -269,8 +269,8 @@ def upgrade() -> None:
         sa.Column("node_id", sa.Uuid(), nullable=True),
         sa.Column("instructions", sa.JSON(), nullable=False),
         sa.Column("priority", sa.Integer(), nullable=False),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.ForeignKeyConstraint(
             ["node_id"],
             ["route_nodes.id"],
@@ -288,8 +288,8 @@ def upgrade() -> None:
         sa.Column("description", sa.String(length=800), nullable=False),
         sa.Column("node_id", sa.Uuid(), nullable=False),
         sa.Column("points_award", sa.Integer(), nullable=False),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.CheckConstraint(
             "points_award > 0", name=op.f("ck_passport_stamp_definitions_points_positive")
         ),
@@ -316,7 +316,7 @@ def upgrade() -> None:
         sa.Column("idempotency_key", sa.String(length=128), nullable=False),
         sa.Column("request_hash", sa.String(length=64), nullable=False),
         sa.Column("provider", sa.String(length=50), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -383,7 +383,7 @@ def upgrade() -> None:
         sa.Column("idempotency_key", sa.String(length=128), nullable=False),
         sa.Column("request_hash", sa.String(length=64), nullable=False),
         sa.Column("provider", sa.String(length=50), nullable=False),
-        sa.Column("is_demo", sa.Boolean(), server_default=sa.text("1"), nullable=False),
+        sa.Column("is_demo", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column(
             "collected_at",
             sa.DateTime(timezone=True),
