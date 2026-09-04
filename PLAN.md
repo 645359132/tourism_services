@@ -11,7 +11,7 @@
 ## 2. FastAPI 与持久化基础
 
 - 交付物：uv 项目、分层应用工厂、配置/日志/CORS/统一错误、SQLAlchemy 2、Alembic、SQLite、可重复种子、`/health`、Docker Compose。
-- 验证：`uv sync`、`uv run alembic upgrade head`（重复两次）、`uv run python -m scripts.seed`（重复两次）、`uv run ruff check .`、`uv run pytest`、`docker compose config`。
+- 验证：`uv sync --frozen`、`uv run alembic upgrade head`（重复两次）、`uv run tourism-seed`（重复两次）、`uv run ruff check .`、`uv run pytest`、`docker compose config`。
 - 提交：`feat(server): establish api and persistence foundation`
 
 ## 3. 认证权限与客户端应用壳
@@ -64,10 +64,11 @@
 
 ## 客户端 CLI 基准
 
-在 `client/` 中使用已实测存在的 DevEco Studio 26 工具：
+在 `client/` 中令 `$devecoRoot` 指向 DevEco Studio 安装目录，再使用实测工具：
 
-- `& 'D:\DevEco Studio\tools\ohpm\bin\ohpm.bat' install`
-- `& 'D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat' tasks --no-daemon`
-- `& 'D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat' test --mode module -p product=default -p module=entry@default -p buildMode=debug --no-daemon`
-- `& 'D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat' assembleHap --mode module -p product=default -p module=entry@default -p buildMode=debug --no-daemon`
-
+- `& (Join-Path $devecoRoot 'tools\ohpm\bin\ohpm.bat') install`
+- `& (Join-Path $devecoRoot 'tools\node\node.exe') (Join-Path $devecoRoot 'plugins\codelinter\run\index.js') -c code-linter.json5 -p default -e error (Join-Path $devecoRoot 'sdk\default\openharmony') .`
+- `& (Join-Path $devecoRoot 'tools\hvigor\bin\hvigorw.bat') tasks --no-daemon`
+- `& (Join-Path $devecoRoot 'tools\hvigor\bin\hvigorw.bat') test --mode module -p product=default -p module=entry@default -p buildMode=debug --no-daemon`
+- `& (Join-Path $devecoRoot 'tools\hvigor\bin\hvigorw.bat') assembleHap --mode module -p product=default -p module=entry@ohosTest -p buildMode=debug --no-daemon`
+- `& (Join-Path $devecoRoot 'tools\hvigor\bin\hvigorw.bat') assembleHap --mode module -p product=default -p module=entry@default -p buildMode=debug --no-daemon`

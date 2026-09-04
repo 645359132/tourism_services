@@ -12,13 +12,11 @@
 | 6. 项目排队与餐住预约 | 已完成 | 原子预约/跨夜/组合、虚拟队列/FastPass、一次性 WS ticket；server pytest 60 passed/68%；客户端 22 tests、真实 REST/WS 与 HAP 通过 |
 | 7. 商城、客服、协作与无障碍 | 已完成 | 商城/积分/反馈/客服 WS/同行双重隐私/适老设施；server pytest 67 passed/70%；客户端 29 tests、真实 REST/WS 与 HAP 通过 |
 | 8. 离线应急与数字护照 | 已完成 | 5 项离线资产/ETag 304/用户隔离缓存与 outbox/只读冷启动/SOS Demo/护照与绿色积分；server pytest 73 passed/70%；客户端 37 tests、真实 REST 与 HAP 通过；phone/tablet 720vp 分栏实现 |
-| 9. 综合质量与容量基线 | 已完成 | canonical pytest 128 passed/72%（门禁 70%）；真实 Uvicorn smoke 46/46（3 条 WS）；Locust 5u/30s 为 332 请求/0 失败/p95 160ms；Redis 全模式与本地降级、安全/分页/并发回归；Code Linter 支持门禁零缺陷；两类 HAP 构建通过；Compose 静态验证通过 |
-| 10. 文档与最终验收 | 进行中 | 正在完成 README、架构/API/Mock 边界、创新点索引与全新环境最终复验 |
+| 9. 综合质量与容量基线 | 已完成 | canonical pytest 129 passed/72.75%（门禁 70%）；真实 Uvicorn smoke 46/46（3 条 WS）；Locust 5u/30s 为 320 请求/0 失败/11.42 req/s/p95 160ms；Redis 全模式与本地降级、安全/分页/并发回归；Code Linter 支持门禁零缺陷；两类 HAP 构建通过；Compose 静态验证通过 |
+| 10. 文档与最终验收 | 已完成 | README、架构/API、76 表数据模型、Mock 边界、创新点索引与验收手册齐备；空库依赖/迁移/seed、129 项服务端测试、46-check 网络 smoke、5u/30s Locust、OHPM/lint/37 项客户端测试/两类 HAP 全部复验；165 个本地链接与源码锚点、敏感信息及本机路径扫描通过 |
 
-已确认的环境约束：
+外部环境边界：
 
-- `client/` 是 ArkTS + ArkUI + Stage 模板，支持 phone/tablet，target SDK 26.0.0，compatible SDK 6.1.0(23)。
-- `server/` 初始为空。
-- Docker daemon 当前不可用；SQLite 零依赖模式优先，Compose 配置仍会静态验证。
-- uv 默认缓存目录受当前受管环境限制；后续使用仓库内已忽略的 `.uv-cache/`。
-- 官方 ohpm 注册表在本机多次 TLS `ECONNRESET`；客户端测试已用 DevEco SDK 自带 Hypium 动态源码的 no-save 本地副本验证，提交内容不含本机路径或本地锁。
+- Docker Desktop Linux daemon 当前不可用；SQLite 零依赖模式与 Compose 静态配置均已验证，PostgreSQL + Redis 容器运行时留待 daemon 可用时复验。
+- `hdc list targets` 返回 `[Empty]`，仓库也不包含签名材料；phone/tablet 响应式代码、37 项 Hypium 测试和两类 unsigned HAP 编译已验证，真机/模拟器矩阵需连接并签名后执行。
+- Code Linter 中当前受支持的 TypeScript/security 规则门禁零缺陷；随 DevEco 安装的 `arkPerfCheck` 在 6 个大型 ArkUI 文件上发生内部 `getDeclaringMethod` 异常，需在升级分析器后补跑该扩展。

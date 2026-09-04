@@ -8,7 +8,7 @@
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| OHPM 锁文件可移植性 | 通过 | `oh-package-lock.json5` 只包含 `@ohos/hypium@1.0.25` 的公开 OHPM 地址、版本和完整性摘要，不含盘符、用户目录或本地 `file:` 依赖。 |
+| OHPM 依赖与锁文件可移植性 | 通过 | `ohpm install` 退出码 0；`oh-package-lock.json5` 只包含 `@ohos/hypium@1.0.25` 的公开 OHPM 地址、版本和完整性摘要，不含盘符、用户目录或本地 `file:` 依赖。 |
 | Hypium 本地业务规则 | 通过 | Hvigor `test` 构建成功；37 个用例全部通过，Failure 0、Error 0。 |
 | `ohosTest` 业务 smoke 编译 | 通过 | `entry@ohosTest` HAP 构建成功；测试源覆盖购票状态流、离线/应急安全和 719/720vp 响应式边界。 |
 | debug HAP | 通过 | `entry@default` HAP 构建成功；CLI 产物未签名，供编译验收使用。 |

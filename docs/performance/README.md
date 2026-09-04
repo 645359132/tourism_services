@@ -14,18 +14,18 @@ the default-cadence measured workload.
 | Concurrent users | 5 |
 | Spawn rate | 5 users/s |
 | Requested duration | 30 s |
-| Requests in the CSV summary | 332 |
+| Requests in the CSV summary | 320 |
 | Failures | 0 (0.00%) |
-| Throughput | 11.41 requests/s |
-| Mean response time | 37.02 ms |
-| p50 / p90 / p95 / p99 | 16 / 81 / 160 / 440 ms |
-| Maximum response time | 517.20 ms |
-| Crowd WebSocket exchanges | 36, all successful |
+| Throughput | 11.42 requests/s |
+| Mean response time | 34.78 ms |
+| p50 / p90 / p95 / p99 | 14 / 75 / 160 / 370 ms |
+| Maximum response time | 808.20 ms |
+| Crowd WebSocket exchanges | 27, all successful |
 
-Locust's terminal summary included two requests which completed during graceful shutdown
-(334 total at 11.27 requests/s). The machine-readable CSV writer had already taken its final
-snapshot at 332 requests. The table above deliberately uses the checked-in CSV as the canonical
-source. Both views reported zero failures; the CSV maximum was 517.20 ms.
+Locust's terminal summary included four requests which completed during graceful shutdown
+(324 total at 11.30 requests/s). The machine-readable CSV writer had already taken its final
+snapshot at 320 requests. The table above deliberately uses the checked-in CSV as the canonical
+source. Both views reported zero failures; the CSV maximum was 808.20 ms.
 
 Each of the five users logged in with a different seeded identity, then performed exactly one
 ticket order/payment, experience reservation/confirmation, and shop cart/checkout/payment.
@@ -43,9 +43,8 @@ Raw evidence:
   four raw CSV files from the accepted run.
 
 The five-sample percentiles for write endpoints are descriptive only. In this run, the largest
-individual observations were ticket order at 517.20 ms, login at 503.92 ms, and reservation
-confirmation at 496.49 ms. A longer run is required before treating endpoint percentiles as
-stable.
+individual observations were reservation confirmation at 808.20 ms, ticket order at 492.31 ms,
+and login at 371.28 ms. A longer run is required before treating endpoint percentiles as stable.
 
 ## Environment and boundaries
 
@@ -76,7 +75,7 @@ environment; do not put it in shell history, source control, CSV prefixes, or re
 $env:APP_ENV = 'development'
 $env:DATABASE_URL = 'sqlite+aiosqlite:///./data/cp9-local.db'
 $env:ENABLE_DEMO_ACCOUNTS = 'true'
-$env:TOURISM_LOAD_USER_PASSWORD = '<local-only secret>'
+$env:TOURISM_LOAD_USER_PASSWORD = '<local-only secret, at least 12 characters>'
 uv run alembic upgrade head
 uv run tourism-load-seed --count 10
 ```

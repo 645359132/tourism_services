@@ -1,0 +1,33 @@
+flowchart LR
+  actor[Tourist and staff]
+  subgraph device[HarmonyOS device]
+    ui[ArkUI pages and components]
+    client_services[Typed service adapters]
+    transport[HTTP and three WebSocket clients]
+    local_store[(User scoped preferences)]
+    ui --> client_services
+    client_services --> transport
+    ui --> local_store
+  end
+  subgraph backend[FastAPI service]
+    rest[REST API v1]
+    sockets[Crowd queue and support sockets]
+    domain[Domain services]
+    providers[Provider boundaries]
+    realtime[Realtime hubs and publishers]
+    rest --> domain
+    sockets --> realtime
+    realtime --> domain
+    domain --> providers
+  end
+  subgraph runtime[Runtime data]
+    sql[(SQLite or PostgreSQL)]
+    coordination[(Local memory or Redis)]
+  end
+  actor --> ui
+  transport --> rest
+  transport --> sockets
+  domain --> sql
+  domain --> coordination
+  realtime --> coordination
+  providers --> demo[Explicit demo adapters]
