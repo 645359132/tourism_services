@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -222,11 +222,24 @@ async def _visible_sos(
     return sos
 
 
-async def list_sos(session: AsyncSession, *, user: User) -> list[SosRequest]:
-    statement = select(SosRequest).order_by(SosRequest.created_at.desc())
+async def list_sos(
+    session: AsyncSession,
+    *,
+    user: User,
+    offset: int,
+    limit: int,
+) -> tuple[list[SosRequest], int]:
+    statement = select(SosRequest).order_by(
+        SosRequest.created_at.desc(),
+        SosRequest.id.desc(),
+    )
     if not _is_staff(user):
         statement = statement.where(SosRequest.user_id == user.id)
-    return list(await session.scalars(statement))
+    total = int(
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    return list(await session.scalars(statement.offset(offset).limit(limit))), total
 
 
 async def get_sos(

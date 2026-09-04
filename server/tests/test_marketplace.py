@@ -23,6 +23,7 @@ from app.core.security import hash_password
 from app.db.base import Base
 from app.db.models.marketplace import (
     BundleComponent,
+    Experience,
     ExperienceSession,
     FastPass,
     HospitalityOffer,
@@ -245,6 +246,29 @@ def test_experience_reservation_contract_and_atomic_lifecycle(
             return reservation.cancel_reason, bucket.held, bucket.confirmed
 
     assert asyncio.run(read_ledger()) == ("行程调整", 0, 0)
+
+
+def test_experience_catalog_is_not_cached_across_live_wait_changes(
+    marketplace_harness: MarketplaceHarness,
+) -> None:
+    before = marketplace_harness.client.get("/api/v1/experiences").json()["items"][0]
+
+    async def change_wait(wait_minutes: int) -> None:
+        async with marketplace_harness.session_factory() as session:
+            await session.execute(
+                update(Experience)
+                .where(Experience.id == UUID(before["id"]))
+                .values(wait_minutes=wait_minutes)
+            )
+            await session.commit()
+
+    changed_wait = before["wait_minutes"] + 13
+    asyncio.run(change_wait(changed_wait))
+    try:
+        after = marketplace_harness.client.get("/api/v1/experiences").json()["items"][0]
+        assert after["wait_minutes"] == changed_wait
+    finally:
+        asyncio.run(change_wait(before["wait_minutes"]))
 
 
 def test_multi_night_half_open_stay_and_bundle_rollback(

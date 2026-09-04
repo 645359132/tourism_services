@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from starlette.websockets import WebSocketDisconnect
 
@@ -21,6 +23,7 @@ from app.core.errors import AppError
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.models.commerce import (
+    Cart,
     PointAccount,
     PointLedgerEntry,
     Product,
@@ -31,6 +34,7 @@ from app.db.models.commerce import (
 )
 from app.db.models.engagement import (
     GroupMember,
+    SupportConversation,
     SupportMessage,
     TravelGroup,
 )
@@ -41,7 +45,7 @@ from app.main import create_app
 from app.schemas.commerce import DeliveryRequest
 from app.scripts.seed import DEMO_PASSWORD, seed_database
 from app.services.auth import get_user_by_id
-from app.services.commerce import checkout_cart
+from app.services.commerce import _ensure_cart, checkout_cart
 from app.services.support import post_message
 
 
@@ -330,6 +334,122 @@ def test_concurrent_checkout_last_stock_has_one_winner(
             return inventory.stock, count
 
     assert asyncio.run(stock_and_orders()) == (0, 1)
+
+
+def test_existing_cart_lookup_does_not_request_sqlite_write_lock(
+    cp7_harness: Checkpoint7Harness,
+) -> None:
+    async def lookup_while_another_writer_is_active() -> UUID:
+        async with cp7_harness.session_factory() as setup:
+            user_id = await setup.scalar(select(User.id).where(User.username == "tourist_demo"))
+            assert user_id is not None
+            cart = await _ensure_cart(setup, user_id)
+            await setup.commit()
+            cart_id = cart.id
+
+        async with (
+            cp7_harness.session_factory() as writer,
+            cp7_harness.session_factory() as reader,
+        ):
+            await writer.execute(text("PRAGMA busy_timeout=25"))
+            await writer.commit()
+            await reader.execute(text("PRAGMA busy_timeout=25"))
+            await reader.commit()
+            await writer.execute(
+                update(Cart).where(Cart.id == cart_id).values(version=Cart.version + 1)
+            )
+            try:
+                loaded = await _ensure_cart(reader, user_id)
+                return loaded.id
+            finally:
+                await reader.rollback()
+                await writer.rollback()
+
+    assert asyncio.run(lookup_while_another_writer_is_active())
+
+
+def test_five_unique_users_can_add_and_checkout_one_product_concurrently(
+    cp7_harness: Checkpoint7Harness,
+) -> None:
+    usernames = [f"cp9_cart_load_{index}" for index in range(5)]
+
+    async def prepare() -> UUID:
+        async with cp7_harness.session_factory() as session:
+            tourist_role = await session.scalar(select(Role).where(Role.name == "tourist"))
+            category_id = await session.scalar(select(Product.category_id).limit(1))
+            assert tourist_role is not None
+            assert category_id is not None
+            for username in usernames:
+                user = User(
+                    username=username,
+                    display_name=username,
+                    password_hash=hash_password(DEMO_PASSWORD),
+                    is_active=True,
+                )
+                session.add(user)
+                await session.flush()
+                session.add(UserRole(user_id=user.id, role_id=tourist_role.id))
+            product = Product(
+                category_id=category_id,
+                sku="CP9-CART-LOAD",
+                name="Concurrent cart product",
+                description="Dedicated five-user SQLite checkout regression",
+                price_cents=100,
+                points_price=None,
+                tags=["test"],
+                image_url=None,
+                is_active=True,
+                is_demo=True,
+            )
+            product.inventory = ProductInventory(stock=20, version=1)
+            session.add(product)
+            await session.commit()
+            return product.id
+
+    product_id = asyncio.run(prepare())
+    tokens = {username: _login(cp7_harness, username) for username in usernames}
+
+    def add_item(username: str):
+        return cp7_harness.client.post(
+            "/api/v1/shop/cart/items",
+            headers=_bearer(tokens[username]),
+            json={"product_id": str(product_id), "quantity": 1},
+        )
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        additions = list(pool.map(add_item, usernames))
+    assert all(response.status_code == 200 for response in additions), [
+        (response.status_code, response.json()) for response in additions
+    ]
+
+    gate = Barrier(5)
+
+    def checkout(index_and_username: tuple[int, str]):
+        index, username = index_and_username
+        gate.wait(timeout=5)
+        return cp7_harness.client.post(
+            "/api/v1/shop/cart/checkout",
+            headers=_bearer(tokens[username]),
+            json={
+                "delivery": _delivery(),
+                "idempotency_key": f"cp9-cart-load-checkout-{index}",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        checkouts = list(pool.map(checkout, enumerate(usernames)))
+    assert all(response.status_code == 201 for response in checkouts), [
+        (response.status_code, response.json()) for response in checkouts
+    ]
+    assert len({response.json()["id"] for response in checkouts}) == 5
+
+    async def remaining_stock() -> int:
+        async with cp7_harness.session_factory() as session:
+            inventory = await session.get(ProductInventory, product_id)
+            assert inventory is not None
+            return inventory.stock
+
+    assert asyncio.run(remaining_stock()) == 15
 
 
 def test_expired_shop_hold_restores_stock_once(
@@ -824,6 +944,66 @@ def test_persisted_support_ws_ticket_scope_and_monotonic_messages(
     sequences, count = asyncio.run(concurrent_same_key())
     assert sequences == [5, 6]
     assert count == 2
+
+
+def test_support_history_defaults_to_latest_fifty_in_chronological_order(
+    cp7_harness: Checkpoint7Harness,
+) -> None:
+    tourist = _login(cp7_harness, "tourist_demo")
+    created = cp7_harness.client.post(
+        "/api/v1/support/conversations",
+        headers=_bearer(tourist),
+        json={"subject": "分页客服记录"},
+    )
+    assert created.status_code == 201
+    conversation_id = UUID(created.json()["id"])
+
+    async def add_history() -> None:
+        async with cp7_harness.session_factory() as session:
+            session.add_all(
+                [
+                    SupportMessage(
+                        conversation_id=conversation_id,
+                        sender_user_id=None,
+                        sender_key="BOT",
+                        sender_type="BOT",
+                        content=f"history-{sequence}",
+                        sequence=sequence,
+                        idempotency_key=f"history-{sequence}",
+                        request_hash=f"{sequence:064x}",
+                        provider="demo_support_bot",
+                        is_demo=True,
+                    )
+                    for sequence in range(1, 61)
+                ]
+            )
+            await session.execute(
+                update(SupportConversation)
+                .where(SupportConversation.id == conversation_id)
+                .values(next_sequence=61, updated_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+    asyncio.run(add_history())
+    default_page = cp7_harness.client.get(
+        f"/api/v1/support/conversations/{conversation_id}/messages",
+        headers=_bearer(tourist),
+    )
+    assert default_page.status_code == 200
+    default_body = default_page.json()
+    assert [item["sequence"] for item in default_body["items"]] == list(range(11, 61))
+    assert default_body["total"] == 60
+
+    first = cp7_harness.client.get(
+        f"/api/v1/support/conversations/{conversation_id}/messages?page_size=10",
+        headers=_bearer(tourist),
+    ).json()
+    second = cp7_harness.client.get(
+        f"/api/v1/support/conversations/{conversation_id}/messages?page=2&page_size=10",
+        headers=_bearer(tourist),
+    ).json()
+    assert [item["sequence"] for item in first["items"]] == list(range(51, 61))
+    assert [item["sequence"] for item in second["items"]] == list(range(41, 51))
 
 
 def test_group_invite_dual_privacy_meeting_and_lost_alert(

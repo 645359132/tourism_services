@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import require_admin, require_tourist
+from app.core.coordination import coordination_key
 from app.db.models.user import User
 from app.db.session import get_session
 from app.schemas.ticketing import (
@@ -45,9 +46,17 @@ router = APIRouter(prefix="/ticketing", tags=["ticketing"])
 
 @router.get("/types", response_model=TicketTypeListResponse)
 async def ticket_types(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TicketTypeListResponse:
-    return TicketTypeListResponse(items=await list_ticket_types(session))
+    async def load() -> TicketTypeListResponse:
+        return TicketTypeListResponse(items=await list_ticket_types(session))
+
+    return await request.app.state.reference_cache.get_or_load(
+        key="ticketing:types",
+        model=TicketTypeListResponse,
+        loader=load,
+    )
 
 
 @router.get("/slots", response_model=TicketSlotListResponse)
@@ -89,14 +98,22 @@ async def create_order(
     session: Annotated[AsyncSession, Depends(get_session)],
     request: Request,
 ) -> TicketOrderResponse:
-    order = await create_ticket_order(
-        session,
-        user=current_user,
-        slot_id=payload.slot_id,
-        quantity=payload.quantity,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:ticket-order",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:ticket-slot", payload.slot_id),
+    ):
+        order = await create_ticket_order(
+            session,
+            user=current_user,
+            slot_id=payload.slot_id,
+            quantity=payload.quantity,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
     return order_response(order)
 
 
@@ -104,9 +121,21 @@ async def create_order(
 async def orders(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> TicketOrderListResponse:
-    found = await list_ticket_orders(session, user=current_user)
-    return TicketOrderListResponse(items=[order_response(order) for order in found])
+    found, total = await list_ticket_orders(
+        session,
+        user=current_user,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    return TicketOrderListResponse(
+        items=[order_response(order) for order in found],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.get("/orders/{order_id}", response_model=TicketOrderResponse)
@@ -123,15 +152,24 @@ async def order_detail(
 async def pay_order(
     order_id: UUID,
     payload: PayOrderRequest,
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TicketOrderResponse:
-    order = await pay_ticket_order(
-        session,
-        order_id=order_id,
-        user=current_user,
-        idempotency_key=payload.idempotency_key,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:ticket-payment",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:ticket-order", order_id),
+    ):
+        order = await pay_ticket_order(
+            session,
+            order_id=order_id,
+            user=current_user,
+            idempotency_key=payload.idempotency_key,
+        )
     return order_response(order)
 
 
@@ -143,14 +181,22 @@ async def refund_order(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TicketOrderResponse:
-    order = await refund_ticket_order(
-        session,
-        order_id=order_id,
-        user=current_user,
-        reason=payload.reason,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:ticket-refund",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:ticket-order", order_id),
+    ):
+        order = await refund_ticket_order(
+            session,
+            order_id=order_id,
+            user=current_user,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
     return order_response(order)
 
 
@@ -162,14 +208,23 @@ async def reschedule_order(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TicketOrderResponse:
-    order = await reschedule_ticket_order(
-        session,
-        order_id=order_id,
-        user=current_user,
-        target_slot_id=payload.target_slot_id,
-        idempotency_key=payload.idempotency_key,
-        walking_buffer_minutes=request.app.state.settings.reservation_walking_buffer_minutes,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:ticket-reschedule",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:ticket-order", order_id),
+        coordination_key("inventory:ticket-slot", payload.target_slot_id),
+    ):
+        order = await reschedule_ticket_order(
+            session,
+            order_id=order_id,
+            user=current_user,
+            target_slot_id=payload.target_slot_id,
+            idempotency_key=payload.idempotency_key,
+            walking_buffer_minutes=request.app.state.settings.reservation_walking_buffer_minutes,
+        )
     return order_response(order)
 
 
@@ -198,11 +253,15 @@ async def gate_validate(
     current_user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> GateValidationResponse:
-    return await validate_ticket_at_gate(
-        session,
-        qr_data=payload.qr_data,
-        request_id=payload.request_id,
-        gate_code=payload.gate_code,
-        validator=current_user,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key("idempotency:gate", payload.request_id),
+        coordination_key("inventory:gate-ticket", payload.qr_data),
+    ):
+        return await validate_ticket_at_gate(
+            session,
+            qr_data=payload.qr_data,
+            request_id=payload.request_id,
+            gate_code=payload.gate_code,
+            validator=current_user,
+            settings=request.app.state.settings,
+        )

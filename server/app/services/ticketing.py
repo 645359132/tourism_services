@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import jwt
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -461,13 +461,26 @@ async def create_ticket_order(
     return loaded
 
 
-async def list_ticket_orders(session: AsyncSession, *, user: User) -> list[TicketOrder]:
+async def list_ticket_orders(
+    session: AsyncSession,
+    *,
+    user: User,
+    offset: int,
+    limit: int,
+) -> tuple[list[TicketOrder], int]:
     await expire_pending_orders(session, user_id=None if _is_admin(user) else user.id)
     await session.commit()
-    statement = _order_statement().order_by(TicketOrder.created_at.desc())
+    statement = _order_statement().order_by(
+        TicketOrder.created_at.desc(),
+        TicketOrder.id.desc(),
+    )
     if not _is_admin(user):
         statement = statement.where(TicketOrder.user_id == user.id)
-    return list(await session.scalars(statement))
+    total = int(
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    return list(await session.scalars(statement.offset(offset).limit(limit))), total
 
 
 async def get_ticket_order(

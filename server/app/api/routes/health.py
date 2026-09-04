@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from app.core.config import Settings
+from app.core.coordination import CoordinationBackend, CoordinationUnavailableError
 
 router = APIRouter(tags=["system"])
 
@@ -20,6 +21,14 @@ class HealthResponse(BaseModel):
 @router.get("/health", response_model=HealthResponse, summary="Check service liveness")
 async def health(request: Request) -> HealthResponse:
     settings: Settings = request.app.state.settings
+    redis_backend: CoordinationBackend | None = request.app.state.redis_coordination
+    if (
+        settings.redis_required
+        and settings.redis_pubsub_enabled
+        and redis_backend is not None
+        and not redis_backend.pubsub_healthy
+    ):
+        raise CoordinationUnavailableError("Redis pub/sub listeners are unavailable")
     return HealthResponse(
         status="ok",
         service=settings.app_name,

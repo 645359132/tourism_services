@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import noload, selectinload
 
 from app.core.errors import AppError
 from app.db.models.engagement import SupportConversation, SupportMessage
@@ -43,20 +43,25 @@ def _is_support(user: User) -> bool:
     return bool({"support", "admin"}.intersection(user.role_names))
 
 
-def _conversation_statement():
-    return (
-        select(SupportConversation)
-        .execution_options(populate_existing=True)
-        .options(selectinload(SupportConversation.messages))
+def _conversation_statement(*, load_messages: bool = True):
+    loader = (
+        selectinload(SupportConversation.messages)
+        if load_messages
+        else noload(SupportConversation.messages)
     )
+    return select(SupportConversation).execution_options(populate_existing=True).options(loader)
 
 
 async def _load_conversation(
     session: AsyncSession,
     conversation_id: UUID,
+    *,
+    load_messages: bool = True,
 ) -> SupportConversation | None:
     return await session.scalar(
-        _conversation_statement().where(SupportConversation.id == conversation_id)
+        _conversation_statement(load_messages=load_messages).where(
+            SupportConversation.id == conversation_id
+        )
     )
 
 
@@ -65,8 +70,13 @@ async def accessible_conversation(
     *,
     conversation_id: UUID,
     user: User,
+    load_messages: bool = True,
 ) -> SupportConversation:
-    conversation = await _load_conversation(session, conversation_id)
+    conversation = await _load_conversation(
+        session,
+        conversation_id,
+        load_messages=load_messages,
+    )
     if conversation is None or (conversation.tourist_user_id != user.id and not _is_support(user)):
         raise _error(404, "SUPPORT_CONVERSATION_NOT_FOUND", "Conversation not found")
     return conversation
@@ -75,17 +85,13 @@ async def accessible_conversation(
 def conversation_response(
     conversation: SupportConversation,
 ) -> SupportConversationResponse:
-    last_message_at = max(
-        (_aware(message.created_at) for message in conversation.messages),
-        default=_aware(conversation.created_at),
-    )
     return SupportConversationResponse(
         id=str(conversation.id),
         subject=conversation.subject,
         status=conversation.status,
         provider=("demo_support_bot" if conversation.mode == "DEMO_BOT" else "human_support"),
         is_demo=conversation.mode == "DEMO_BOT",
-        last_message_at=last_message_at,
+        last_message_at=_aware(conversation.updated_at),
         created_at=_aware(conversation.created_at),
     )
 
@@ -159,11 +165,20 @@ async def list_conversations(
     session: AsyncSession,
     *,
     user: User,
-) -> list[SupportConversation]:
-    statement = _conversation_statement().order_by(SupportConversation.updated_at.desc())
+    offset: int,
+    limit: int,
+) -> tuple[list[SupportConversation], int]:
+    statement = _conversation_statement(load_messages=False).order_by(
+        SupportConversation.updated_at.desc(),
+        SupportConversation.id.desc(),
+    )
     if not _is_support(user):
         statement = statement.where(SupportConversation.tourist_user_id == user.id)
-    return list(await session.scalars(statement))
+    total = int(
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    return list(await session.scalars(statement.offset(offset).limit(limit))), total
 
 
 async def list_messages(
@@ -171,13 +186,29 @@ async def list_messages(
     *,
     conversation_id: UUID,
     user: User,
-) -> tuple[SupportConversation, list[SupportMessage]]:
+    offset: int,
+    limit: int,
+) -> tuple[SupportConversation, list[SupportMessage], int]:
     conversation = await accessible_conversation(
         session,
         conversation_id=conversation_id,
         user=user,
+        load_messages=False,
     )
-    return conversation, list(conversation.messages)
+    base = select(SupportMessage).where(SupportMessage.conversation_id == conversation_id)
+    total = int(await session.scalar(select(func.count()).select_from(base.subquery())) or 0)
+    messages = list(
+        await session.scalars(
+            base.order_by(
+                SupportMessage.sequence.desc(),
+                SupportMessage.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    messages.reverse()
+    return conversation, messages, total
 
 
 async def _append_message(

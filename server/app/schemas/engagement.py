@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.common import PaginatedResponse
+
 
 class FeedbackFollowUpResponse(BaseModel):
     id: str
@@ -32,7 +34,7 @@ class FeedbackResponse(BaseModel):
     updated_at: datetime
 
 
-class FeedbackListResponse(BaseModel):
+class FeedbackListResponse(PaginatedResponse):
     items: list[FeedbackResponse]
 
 
@@ -99,11 +101,11 @@ class SupportConversationResponse(BaseModel):
     created_at: datetime
 
 
-class SupportConversationListResponse(BaseModel):
+class SupportConversationListResponse(PaginatedResponse):
     items: list[SupportConversationResponse]
 
 
-class SupportMessageListResponse(BaseModel):
+class SupportMessageListResponse(PaginatedResponse):
     items: list[SupportMessageResponse]
 
 

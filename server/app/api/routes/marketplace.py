@@ -20,6 +20,7 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import require_tourist
+from app.core.coordination import CoordinationUnavailableError, coordination_key
 from app.core.errors import AppError
 from app.db.models.user import User
 from app.db.session import get_session
@@ -117,14 +118,22 @@ async def create_reservation(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ReservationResponse:
-    reservation = await create_experience_reservation(
-        session,
-        user=current_user,
-        session_id=payload.session_id,
-        party_size=payload.party_size,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:reservation",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:experience-session", payload.session_id),
+    ):
+        reservation = await create_experience_reservation(
+            session,
+            user=current_user,
+            session_id=payload.session_id,
+            party_size=payload.party_size,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
     return reservation_response(reservation)
 
 
@@ -132,9 +141,21 @@ async def create_reservation(
 async def reservations(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> ReservationListResponse:
-    found = await list_reservations(session, user=current_user)
-    return ReservationListResponse(items=[reservation_response(item) for item in found])
+    found, total = await list_reservations(
+        session,
+        user=current_user,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    return ReservationListResponse(
+        items=[reservation_response(item) for item in found],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.post(
@@ -144,15 +165,24 @@ async def reservations(
 async def confirm_booking(
     reservation_id: UUID,
     payload: ReservationOperationRequest,
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ReservationResponse:
-    reservation = await confirm_reservation(
-        session,
-        reservation_id=reservation_id,
-        user=current_user,
-        idempotency_key=payload.idempotency_key,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:reservation-confirm",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:reservation", reservation_id),
+    ):
+        reservation = await confirm_reservation(
+            session,
+            reservation_id=reservation_id,
+            user=current_user,
+            idempotency_key=payload.idempotency_key,
+        )
     return reservation_response(reservation)
 
 
@@ -163,16 +193,25 @@ async def confirm_booking(
 async def cancel_booking(
     reservation_id: UUID,
     payload: CancelReservationRequest,
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ReservationResponse:
-    reservation = await cancel_reservation(
-        session,
-        reservation_id=reservation_id,
-        user=current_user,
-        reason=payload.reason,
-        idempotency_key=payload.idempotency_key,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:reservation-cancel",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:reservation", reservation_id),
+    ):
+        reservation = await cancel_reservation(
+            session,
+            reservation_id=reservation_id,
+            user=current_user,
+            reason=payload.reason,
+            idempotency_key=payload.idempotency_key,
+        )
     return reservation_response(reservation)
 
 
@@ -183,17 +222,26 @@ async def cancel_booking(
 )
 async def create_queue(
     payload: JoinQueueRequest,
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> QueueResponse:
-    context = await join_queue(
-        session,
-        user=current_user,
-        experience_id=payload.experience_id,
-        party_size=payload.party_size,
-        itinerary_id=payload.itinerary_id,
-        idempotency_key=payload.idempotency_key,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:queue-join",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:experience-queue", payload.experience_id),
+    ):
+        context = await join_queue(
+            session,
+            user=current_user,
+            experience_id=payload.experience_id,
+            party_size=payload.party_size,
+            itinerary_id=payload.itinerary_id,
+            idempotency_key=payload.idempotency_key,
+        )
     return await queue_response(session, context)
 
 
@@ -217,15 +265,23 @@ async def remove_queue(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> QueueResponse:
-    response = await queue_response(
-        session,
-        await leave_queue(
-            session,
-            queue_id=queue_id,
-            user=current_user,
-            idempotency_key=payload.idempotency_key,
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:queue-leave",
+            current_user.id,
+            payload.idempotency_key,
         ),
-    )
+        coordination_key("inventory:queue", queue_id),
+    ):
+        response = await queue_response(
+            session,
+            await leave_queue(
+                session,
+                queue_id=queue_id,
+                user=current_user,
+                idempotency_key=payload.idempotency_key,
+            ),
+        )
     await request.app.state.queue_hub.broadcast(queue_id, queue_envelope(response))
     return response
 
@@ -238,14 +294,22 @@ async def create_fast_pass(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FastPassResponse:
-    context = await buy_fast_pass(
-        session,
-        queue_id=queue_id,
-        user=current_user,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
-    response = await queue_response(session, context)
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:fast-pass",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:queue", queue_id),
+    ):
+        context = await buy_fast_pass(
+            session,
+            queue_id=queue_id,
+            user=current_user,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
+        response = await queue_response(session, context)
     await request.app.state.queue_hub.broadcast(queue_id, queue_envelope(response))
     assert context.fast_pass is not None
     return fast_pass_response(context.fast_pass, context.experience)
@@ -280,7 +344,11 @@ async def queue_websocket(
     ticket: Annotated[str, Query(min_length=20, max_length=256)],
 ) -> None:
     store: QueueTicketStore = websocket.app.state.queue_tickets
-    grant = await store.consume(token=ticket, queue_id=queue_id)
+    try:
+        grant = await store.consume(token=ticket, queue_id=queue_id)
+    except CoordinationUnavailableError:
+        await websocket.close(code=1013)
+        return
     if grant is None:
         await websocket.close(code=4401)
         return
@@ -365,17 +433,33 @@ async def queue_websocket(
 
 @router.get("/hospitality/venues", response_model=VenueListResponse)
 async def hospitality_venues(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> VenueListResponse:
-    return VenueListResponse(items=await list_venues(session))
+    async def load() -> VenueListResponse:
+        return VenueListResponse(items=await list_venues(session))
+
+    return await request.app.state.reference_cache.get_or_load(
+        key="hospitality:venues",
+        model=VenueListResponse,
+        loader=load,
+    )
 
 
 @router.get("/hospitality/offers", response_model=OfferListResponse)
 async def hospitality_offers(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     venue_id: Annotated[UUID | None, Query()] = None,
 ) -> OfferListResponse:
-    return OfferListResponse(items=await list_offers(session, venue_id=venue_id))
+    async def load() -> OfferListResponse:
+        return OfferListResponse(items=await list_offers(session, venue_id=venue_id))
+
+    return await request.app.state.reference_cache.get_or_load(
+        key=f"hospitality:offers:{venue_id or 'all'}",
+        model=OfferListResponse,
+        loader=load,
+    )
 
 
 @router.get("/hospitality/availability", response_model=AvailabilityResponse)
@@ -406,17 +490,25 @@ async def create_stay_booking(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ReservationResponse:
-    reservation = await book_stay(
-        session,
-        user=current_user,
-        offer_id=payload.offer_id,
-        check_in=payload.check_in,
-        check_out=payload.check_out,
-        quantity=payload.quantity,
-        party_size=payload.party_size,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:stay-booking",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:hospitality-offer", payload.offer_id),
+    ):
+        reservation = await book_stay(
+            session,
+            user=current_user,
+            offer_id=payload.offer_id,
+            check_in=payload.check_in,
+            check_out=payload.check_out,
+            quantity=payload.quantity,
+            party_size=payload.party_size,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
     return reservation_response(reservation)
 
 
@@ -431,15 +523,23 @@ async def create_dining_booking(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ReservationResponse:
-    reservation = await book_dining(
-        session,
-        user=current_user,
-        offer_id=payload.offer_id,
-        starts_at=payload.starts_at,
-        party_size=payload.party_size,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:dining-booking",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:hospitality-offer", payload.offer_id),
+    ):
+        reservation = await book_dining(
+            session,
+            user=current_user,
+            offer_id=payload.offer_id,
+            starts_at=payload.starts_at,
+            party_size=payload.party_size,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
     return reservation_response(reservation)
 
 
@@ -454,15 +554,23 @@ async def create_bundle_booking(
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ReservationResponse:
-    reservation = await book_bundle(
-        session,
-        user=current_user,
-        offer_id=payload.offer_id,
-        visit_date=payload.visit_date,
-        party_size=payload.party_size,
-        idempotency_key=payload.idempotency_key,
-        settings=request.app.state.settings,
-    )
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:bundle-booking",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:hospitality-offer", payload.offer_id),
+    ):
+        reservation = await book_bundle(
+            session,
+            user=current_user,
+            offer_id=payload.offer_id,
+            visit_date=payload.visit_date,
+            party_size=payload.party_size,
+            idempotency_key=payload.idempotency_key,
+            settings=request.app.state.settings,
+        )
     return reservation_response(reservation)
 
 

@@ -12,6 +12,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.coordination import CoordinationBusyError, CoordinationUnavailableError
+from app.core.middleware import apply_cors_headers, apply_security_headers
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +79,32 @@ def _http_error_code(status_code: int) -> str:
 def register_exception_handlers(app: FastAPI) -> None:
     """Install one stable error envelope across framework and domain errors."""
 
+    @app.exception_handler(CoordinationBusyError)
+    async def handle_coordination_busy(
+        request: Request,
+        exc: CoordinationBusyError,
+    ) -> JSONResponse:
+        return _error_response(
+            request,
+            status_code=409,
+            code="OPERATION_IN_PROGRESS",
+            message="A conflicting operation is already in progress",
+            headers={"Retry-After": "1"},
+        )
+
+    @app.exception_handler(CoordinationUnavailableError)
+    async def handle_coordination_unavailable(
+        request: Request,
+        exc: CoordinationUnavailableError,
+    ) -> JSONResponse:
+        return _error_response(
+            request,
+            status_code=503,
+            code="COORDINATION_UNAVAILABLE",
+            message="Distributed coordination is temporarily unavailable",
+            headers={"Retry-After": "1"},
+        )
+
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         return _error_response(
@@ -114,9 +143,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled application error", exc_info=exc)
-        return _error_response(
+        response = _error_response(
             request,
             status_code=500,
             code="INTERNAL_SERVER_ERROR",
             message="An unexpected error occurred",
         )
+        if request.app.state.settings.security_headers_enabled:
+            apply_security_headers(request, response)
+        apply_cors_headers(request, response)
+        return response

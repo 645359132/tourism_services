@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import require_roles, require_tourist
+from app.core.coordination import CoordinationUnavailableError
 from app.core.errors import AppError
 from app.db.models.user import User
 from app.db.session import get_session
@@ -67,10 +68,20 @@ async def create_support_conversation(
 async def support_conversations(
     current_user: Annotated[User, Depends(require_support_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> SupportConversationListResponse:
-    conversations = await list_conversations(session, user=current_user)
+    conversations, total = await list_conversations(
+        session,
+        user=current_user,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
     return SupportConversationListResponse(
-        items=[conversation_response(item) for item in conversations]
+        items=[conversation_response(item) for item in conversations],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
 
 
@@ -82,14 +93,21 @@ async def support_messages(
     conversation_id: UUID,
     current_user: Annotated[User, Depends(require_support_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> SupportMessageListResponse:
-    _, messages = await list_messages(
+    _, messages, total = await list_messages(
         session,
         conversation_id=conversation_id,
         user=current_user,
+        offset=(page - 1) * page_size,
+        limit=page_size,
     )
     return SupportMessageListResponse(
-        items=[await message_response(session, message) for message in messages]
+        items=[await message_response(session, message) for message in messages],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
 
 
@@ -122,7 +140,10 @@ async def create_support_message(
         )
         await hub.broadcast(conversation.id, envelope)
     return SupportMessageListResponse(
-        items=[await message_response(session, message) for message in messages]
+        items=[await message_response(session, message) for message in messages],
+        page=1,
+        page_size=len(messages),
+        total=len(messages),
     )
 
 
@@ -153,10 +174,14 @@ async def support_websocket(
     ticket: Annotated[str, Query(min_length=20, max_length=256)],
 ) -> None:
     store: SupportTicketStore = websocket.app.state.support_tickets
-    grant = await store.consume(
-        token=ticket,
-        conversation_id=conversation_id,
-    )
+    try:
+        grant = await store.consume(
+            token=ticket,
+            conversation_id=conversation_id,
+        )
+    except CoordinationUnavailableError:
+        await websocket.close(code=1013)
+        return
     if grant is None:
         await websocket.close(code=4401)
         return

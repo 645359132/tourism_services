@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from ipaddress import ip_network
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -25,10 +26,19 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     debug: bool = False
     database_url: str = "sqlite+aiosqlite:///./data/tourism.db"
+    database_pool_size: int = Field(default=10, ge=1, le=100)
+    database_max_overflow: int = Field(default=20, ge=0, le=200)
+    database_pool_timeout_seconds: float = Field(default=30.0, ge=1, le=300)
+    database_pool_recycle_seconds: int = Field(default=1800, ge=60, le=86400)
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://localhost:3000"]
     )
     cors_allow_credentials: bool = True
+    trusted_hosts: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "testserver"]
+    )
+    trusted_proxy_networks: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    security_headers_enabled: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = False
     jwt_secret_key: str = "development-only-jwt-secret-key-change-me-32"
@@ -49,6 +59,24 @@ class Settings(BaseSettings):
     ws_ticket_ttl_seconds: int = Field(default=60, ge=10, le=300)
     fastpass_valid_minutes: int = Field(default=60, ge=5, le=240)
     shop_order_reservation_minutes: int = Field(default=15, ge=1, le=120)
+    redis_url: str | None = None
+    redis_coordination_enabled: bool = False
+    redis_required: bool = False
+    redis_key_prefix: str = "tourism"
+    redis_socket_timeout_seconds: float = Field(default=2.0, ge=0.1, le=30)
+    redis_cache_enabled: bool = True
+    redis_pubsub_enabled: bool = True
+    redis_rate_limit_enabled: bool = True
+    redis_ticket_enabled: bool = True
+    redis_lock_enabled: bool = True
+    reference_cache_ttl_seconds: int = Field(default=60, ge=1, le=3600)
+    rate_limit_enabled: bool = True
+    rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    rate_limit_mutation_requests: int = Field(default=120, ge=1, le=10000)
+    rate_limit_auth_requests: int = Field(default=30, ge=1, le=10000)
+    rate_limit_ws_ticket_requests: int = Field(default=30, ge=1, le=10000)
+    coordination_claim_ttl_seconds: int = Field(default=30, ge=1, le=300)
+    coordination_lock_wait_seconds: float = Field(default=2.0, ge=0, le=30)
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -78,15 +106,73 @@ class Settings(BaseSettings):
             return parsed
         return [origin.strip() for origin in stripped.split(",") if origin.strip()]
 
-    @model_validator(mode="after")
-    def reject_insecure_production_jwt_secret(self) -> Settings:
-        """Fail production startup when a development or placeholder key is used."""
+    @field_validator("trusted_hosts", mode="before")
+    @classmethod
+    def parse_trusted_hosts(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if stripped.startswith("["):
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError("TRUSTED_HOSTS JSON value must be a list")
+            return parsed
+        return [host.strip() for host in stripped.split(",") if host.strip()]
 
+    @field_validator("trusted_proxy_networks", mode="before")
+    @classmethod
+    def parse_trusted_proxy_networks(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError("TRUSTED_PROXY_NETWORKS JSON value must be a list")
+            return parsed
+        return [network.strip() for network in stripped.split(",") if network.strip()]
+
+    @field_validator("trusted_proxy_networks")
+    @classmethod
+    def validate_trusted_proxy_networks(cls, value: list[str]) -> list[str]:
+        try:
+            return [str(ip_network(network, strict=False)) for network in value]
+        except ValueError as exc:
+            raise ValueError("TRUSTED_PROXY_NETWORKS entries must be IP networks") from exc
+
+    @field_validator("redis_key_prefix")
+    @classmethod
+    def normalize_redis_key_prefix(cls, value: str) -> str:
+        normalized = value.strip().strip(":")
+        if not normalized:
+            raise ValueError("REDIS_KEY_PREFIX must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_runtime_safety(self) -> Settings:
+        """Reject incomplete coordination and insecure production settings."""
+
+        if self.redis_coordination_enabled and not self.redis_url:
+            raise ValueError("REDIS_COORDINATION_ENABLED requires REDIS_URL")
+        if self.redis_required and not self.redis_coordination_enabled:
+            raise ValueError("REDIS_REQUIRED needs enabled Redis coordination and REDIS_URL")
         if self.app_env != "production":
             return self
 
+        if self.debug:
+            raise ValueError("Production DEBUG must be disabled")
         if self.enable_demo_accounts:
             raise ValueError("Demo accounts must never be enabled in production")
+        if not self.cors_origins or "*" in self.cors_origins:
+            raise ValueError("Production CORS_ORIGINS must be explicit")
+        if any(not origin.startswith("https://") for origin in self.cors_origins):
+            raise ValueError("Production CORS_ORIGINS must use HTTPS")
+        if not self.trusted_hosts or "*" in self.trusted_hosts:
+            raise ValueError("Production TRUSTED_HOSTS must be explicit")
+        if not self.security_headers_enabled:
+            raise ValueError("Production security headers must be enabled")
 
         normalized = self.jwt_secret_key.strip().lower()
         insecure_markers = ("development", "placeholder", "replace", "change-me")

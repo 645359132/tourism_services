@@ -83,9 +83,21 @@ async def submit_feedback(
 async def feedback_items(
     current_user: Annotated[User, Depends(require_feedback_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> FeedbackListResponse:
-    items = await list_feedback(session, user=current_user)
-    return FeedbackListResponse(items=[feedback_response(item) for item in items])
+    items, total = await list_feedback(
+        session,
+        user=current_user,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    return FeedbackListResponse(
+        items=[feedback_response(item) for item in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
 
 
 @router.get("/feedback/{feedback_id}", response_model=FeedbackResponse)

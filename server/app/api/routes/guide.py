@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session, get_session_factory
@@ -55,16 +55,32 @@ async def attraction_detail(
 )
 async def attraction_narrations(
     attraction_id: UUID,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> NarrationListResponse:
-    return NarrationListResponse(items=await list_narrations(session, attraction_id))
+    async def load() -> NarrationListResponse:
+        return NarrationListResponse(items=await list_narrations(session, attraction_id))
+
+    return await request.app.state.reference_cache.get_or_load(
+        key=f"guide:narrations:{attraction_id}",
+        model=NarrationListResponse,
+        loader=load,
+    )
 
 
 @router.get("/map", response_model=MapResponse)
 async def guide_map(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> MapResponse:
-    return await map_response(session)
+    async def load() -> MapResponse:
+        return await map_response(session)
+
+    return await request.app.state.reference_cache.get_or_load(
+        key="guide:map",
+        model=MapResponse,
+        loader=load,
+    )
 
 
 @router.get("/crowd", response_model=CrowdResponse)

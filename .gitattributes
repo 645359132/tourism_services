@@ -7,9 +7,9 @@
 *.ets text eol=lf
 *.ts text eol=lf
 *.json5 text eol=lf
+*.csv binary
 *.bat text eol=crlf
 *.ps1 text eol=crlf
 *.png binary
 *.jpg binary
 *.jpeg binary
-

@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.common import PaginatedResponse
+
 MutationType = Literal["NOTE", "ITINERARY_ACK", "EMERGENCY_ACK"]
 
 
@@ -216,7 +218,7 @@ class SosResponse(BaseModel):
     updated_at: datetime
 
 
-class SosListResponse(BaseModel):
+class SosListResponse(PaginatedResponse):
     items: list[SosResponse]
 
 

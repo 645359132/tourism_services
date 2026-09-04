@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 from collections.abc import Callable
@@ -10,10 +11,17 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from math import ceil
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.coordination import (
+    CoordinationBackend,
+    CoordinationUnavailableError,
+    LocalCoordinationBackend,
+    coordination_payload,
+)
 from app.schemas.marketplace import QueueWebSocketEnvelope
 from app.services.queues import advance_queue_tick, queue_envelope
 from app.services.reservations import expire_reservation_holds
@@ -29,25 +37,63 @@ class QueueTicket:
 
 
 class QueueTicketStore:
-    """Process-local atomic one-time tickets; Redis is the multi-worker boundary."""
+    """Atomic one-time tickets backed by Redis when full mode is enabled."""
 
-    def __init__(self, *, ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int,
+        backend: CoordinationBackend | None = None,
+        fallback: LocalCoordinationBackend | None = None,
+        allow_degraded: bool = True,
+    ) -> None:
         self.ttl_seconds = ttl_seconds
-        self._tickets: dict[str, QueueTicket] = {}
+        self.fallback = fallback or LocalCoordinationBackend()
+        self.backend = backend or self.fallback
+        self.allow_degraded = allow_degraded
         self._lock = asyncio.Lock()
+        self._local_only: dict[str, datetime] = {}
+
+    def configure_backend(self, backend: CoordinationBackend) -> None:
+        self.backend = backend
 
     async def issue(self, *, user_id: UUID, queue_id: UUID) -> tuple[str, datetime]:
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=self.ttl_seconds)
-        token = secrets.token_urlsafe(32)
-        async with self._lock:
-            self._purge_expired(now)
-            self._tickets[sha256(token.encode()).hexdigest()] = QueueTicket(
-                user_id,
-                queue_id,
-                expires_at,
-            )
-        return token, expires_at
+        self._local_only = {key: expiry for key, expiry in self._local_only.items() if expiry > now}
+        payload = coordination_payload(
+            {
+                "user_id": user_id,
+                "queue_id": queue_id,
+                "expires_at": expires_at,
+            }
+        )
+        for _ in range(3):
+            token = secrets.token_urlsafe(32)
+            key = f"queue:{sha256(token.encode()).hexdigest()}"
+            try:
+                stored = await self.backend.ticket_put(
+                    key=key,
+                    payload=payload,
+                    ttl_seconds=self.ttl_seconds,
+                )
+            except CoordinationUnavailableError:
+                if not self.allow_degraded:
+                    raise
+                logger.warning("Queue ticket issue degraded to local")
+                stored = await self.fallback.ticket_put(
+                    key=key,
+                    payload=payload,
+                    ttl_seconds=self.ttl_seconds,
+                )
+                if stored:
+                    self._local_only[key] = expires_at
+                    return token, expires_at
+                continue
+            if not stored:
+                continue
+            return token, expires_at
+        raise RuntimeError("Unable to allocate a unique queue WebSocket ticket")
 
     async def consume(
         self,
@@ -55,34 +101,64 @@ class QueueTicketStore:
         token: str,
         queue_id: UUID,
     ) -> QueueTicket | None:
-        """Pop before validation so wrong-channel attempts also burn the ticket."""
+        """Atomically burn before validation, including wrong-channel attempts."""
 
-        now = datetime.now(UTC)
+        key = f"queue:{sha256(token.encode()).hexdigest()}"
         async with self._lock:
-            self._purge_expired(now)
-            ticket = self._tickets.pop(sha256(token.encode()).hexdigest(), None)
-        if ticket is None or ticket.queue_id != queue_id or ticket.expires_at <= now:
+            now = datetime.now(UTC)
+            self._local_only = {
+                found_key: expiry for found_key, expiry in self._local_only.items() if expiry > now
+            }
+            try:
+                raw = await self.backend.ticket_take(key)
+            except CoordinationUnavailableError:
+                if not self.allow_degraded:
+                    raise
+                logger.warning("Queue ticket consume degraded to local")
+                raw = await self.fallback.ticket_take(key)
+            else:
+                if raw is None and self.allow_degraded and key in self._local_only:
+                    raw = await self.fallback.ticket_take(key)
+            self._local_only.pop(key, None)
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+            ticket = QueueTicket(
+                user_id=UUID(value["user_id"]),
+                queue_id=UUID(value["queue_id"]),
+                expires_at=datetime.fromisoformat(value["expires_at"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        if ticket.queue_id != queue_id or ticket.expires_at <= datetime.now(UTC):
             return None
         return ticket
 
-    def _purge_expired(self, now: datetime) -> None:
-        expired = [token for token, ticket in self._tickets.items() if ticket.expires_at <= now]
-        for token in expired:
-            self._tickets.pop(token, None)
-
-    @property
-    def pending_count(self) -> int:
-        return len(self._tickets)
-
 
 class QueueConnectionHub:
-    """Latest-value queue fan-out partitioned by queue entry id."""
+    """Latest-value queue fan-out with optional cross-worker Redis pub/sub."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        backend: CoordinationBackend | None = None,
+        allow_degraded: bool = True,
+    ) -> None:
         self._queues: dict[
             UUID,
             dict[str, asyncio.Queue[QueueWebSocketEnvelope]],
         ] = {}
+        self.backend = backend
+        self.allow_degraded = allow_degraded
+        self.origin = uuid4().hex
+
+    def configure_backend(self, backend: CoordinationBackend) -> None:
+        self.backend = backend
+
+    async def start(self) -> None:
+        if self.backend is not None and self.backend.distributed:
+            await self.backend.subscribe("queue:*", self._receive)
 
     def register(
         self,
@@ -106,12 +182,45 @@ class QueueConnectionHub:
         queue_id: UUID,
         envelope: QueueWebSocketEnvelope,
     ) -> None:
+        await self._broadcast_local(queue_id, envelope)
+        if self.backend is None or not self.backend.distributed:
+            return
+        payload = coordination_payload(
+            {
+                "origin": self.origin,
+                "data": envelope.model_dump(mode="json"),
+            }
+        )
+        try:
+            await self.backend.publish(f"queue:{queue_id}", payload)
+        except CoordinationUnavailableError:
+            if not self.allow_degraded:
+                raise
+            logger.warning("Queue broadcast degraded to local")
+
+    async def _broadcast_local(
+        self,
+        queue_id: UUID,
+        envelope: QueueWebSocketEnvelope,
+    ) -> None:
         for queue in tuple(self._queues.get(queue_id, {}).values()):
             if queue.full():
                 with suppress(asyncio.QueueEmpty):
                     queue.get_nowait()
             with suppress(asyncio.QueueFull):
                 queue.put_nowait(envelope)
+
+    async def _receive(self, topic: str, payload: str) -> None:
+        try:
+            queue_id = UUID(topic.removeprefix("queue:"))
+            decoded = json.loads(payload)
+            if decoded.get("origin") == self.origin:
+                return
+            envelope = QueueWebSocketEnvelope.model_validate(decoded["data"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Ignoring invalid queue pub/sub payload")
+            return
+        await self._broadcast_local(queue_id, envelope)
 
     @property
     def connection_count(self) -> int:
@@ -127,13 +236,39 @@ class QueuePublisher:
         hub: QueueConnectionHub,
         session_factory_provider: Callable[[], async_sessionmaker[AsyncSession]],
         interval_seconds: float,
+        leader_backend: CoordinationBackend | None = None,
+        allow_degraded: bool = True,
     ) -> None:
         self.hub = hub
         self.session_factory_provider = session_factory_provider
         self.interval_seconds = interval_seconds
+        self.leader_backend = leader_backend
+        self.allow_degraded = allow_degraded
         self._task: asyncio.Task[None] | None = None
 
+    def configure_leader_backend(self, backend: CoordinationBackend) -> None:
+        self.leader_backend = backend
+
+    async def _is_tick_leader(self) -> bool:
+        backend = self.leader_backend
+        if backend is None or not backend.distributed:
+            return True
+        try:
+            decision = await backend.rate_limit(
+                key="publisher:queue",
+                limit=1,
+                window_seconds=max(ceil(self.interval_seconds), 1),
+            )
+            return decision.allowed
+        except CoordinationUnavailableError:
+            if not self.allow_degraded:
+                raise
+            logger.warning("Queue publisher leadership degraded to local")
+            return True
+
     async def publish_once(self) -> list[QueueWebSocketEnvelope]:
+        if not await self._is_tick_leader():
+            return []
         factory = self.session_factory_provider()
         async with factory() as session:
             await expire_reservation_holds(session)

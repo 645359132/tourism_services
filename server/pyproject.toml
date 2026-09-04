@@ -11,6 +11,7 @@ dependencies = [
   "fastapi>=0.115,<1",
   "pyjwt>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "redis>=5.2,<7",
   "sqlalchemy[asyncio]>=2.0.36,<3",
   "tzdata>=2025.2",
   "uvicorn[standard]>=0.30,<1",
@@ -22,12 +23,17 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
   "pytest-cov>=6,<7",
+  "locust>=2.32,<3",
   "ruff>=0.9,<1",
+  "websocket-client>=1.8,<2",
+  "websockets>=13,<16",
 ]
 
 [project.scripts]
 tourism-api = "app.main:run"
 tourism-seed = "app.scripts.seed:run"
+tourism-smoke = "app.scripts.smoke:run"
+tourism-load-seed = "app.scripts.load_seed:run"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,7 +43,7 @@ build-backend = "hatchling.build"
 packages = ["app"]
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-config --strict-markers --basetemp=.pytest-tmp"
+addopts = "-q --strict-config --strict-markers --basetemp=.pytest-tmp --cov=app --cov-report=term-missing"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -48,6 +54,7 @@ source = ["app"]
 omit = ["app/scripts/*"]
 
 [tool.coverage.report]
+fail_under = 70
 exclude_also = [
   "if TYPE_CHECKING:",
   "if __name__ == .__main__.:",

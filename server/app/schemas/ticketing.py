@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import PaginatedResponse
+
 
 class TicketTypeItem(BaseModel):
     id: str
@@ -104,7 +106,7 @@ class TicketOrderResponse(BaseModel):
     tickets: list[TicketSummary]
 
 
-class TicketOrderListResponse(BaseModel):
+class TicketOrderListResponse(PaginatedResponse):
     items: list[TicketOrderResponse]
 
 

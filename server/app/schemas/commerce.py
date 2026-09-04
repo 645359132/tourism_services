@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.common import PaginatedResponse
+
 
 class CategoryResponse(BaseModel):
     id: str
@@ -162,7 +164,7 @@ class ShopOrderResponse(BaseModel):
     paid_at: datetime | None
 
 
-class ShopOrderListResponse(BaseModel):
+class ShopOrderListResponse(PaginatedResponse):
     items: list[ShopOrderResponse]
 
 
@@ -184,7 +186,7 @@ class PointLedgerResponse(BaseModel):
     created_at: datetime
 
 
-class PointLedgerListResponse(BaseModel):
+class PointLedgerListResponse(PaginatedResponse):
     items: list[PointLedgerResponse]
 
 

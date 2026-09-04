@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -202,10 +202,21 @@ async def list_campaigns(session: AsyncSession) -> list[CampaignResponse]:
     ]
 
 
+async def _load_cart(session: AsyncSession, user_id: UUID) -> Cart | None:
+    return await session.scalar(_cart_statement().where(Cart.user_id == user_id))
+
+
 async def _ensure_cart(session: AsyncSession, user_id: UUID) -> Cart:
+    cart = await _load_cart(session, user_id)
+    if cart is not None:
+        return cart
+
     bind = session.get_bind()
     values = {"id": uuid4(), "user_id": user_id, "version": 1}
     if bind.dialect.name == "sqlite":
+        # End the read transaction before requesting SQLite's single writer
+        # lock. This path is reached only for a genuinely missing cart.
+        await session.rollback()
         await session.execute(sqlite_insert(Cart).values(**values).on_conflict_do_nothing())
     elif bind.dialect.name == "postgresql":
         await session.execute(
@@ -216,7 +227,7 @@ async def _ensure_cart(session: AsyncSession, user_id: UUID) -> Cart:
     elif await session.scalar(select(Cart).where(Cart.user_id == user_id)) is None:
         session.add(Cart(**values))
         await session.flush()
-    cart = await session.scalar(_cart_statement().where(Cart.user_id == user_id))
+    cart = await _load_cart(session, user_id)
     assert cart is not None
     return cart
 
@@ -260,6 +271,12 @@ async def get_cart(session: AsyncSession, *, user: User) -> Cart:
     await expire_shop_orders(session)
     await session.commit()
     return await _ensure_cart(session, user.id)
+
+
+async def get_existing_cart(session: AsyncSession, *, user: User) -> Cart | None:
+    """Load a cart without expiration writes or create-on-read behavior."""
+
+    return await _load_cart(session, user.id)
 
 
 async def add_cart_item(
@@ -465,7 +482,10 @@ async def checkout_cart(
             raise _error(409, "IDEMPOTENCY_CONFLICT", "Checkout key payload differs")
         return existing
 
-    cart = await _ensure_cart(session, actor_id)
+    cart = await _load_cart(session, actor_id)
+    if cart is None:
+        await session.rollback()
+        raise _error(409, "CART_EMPTY", "Cart is empty")
     locked = await session.execute(
         update(Cart)
         .execution_options(synchronize_session=False)
@@ -665,13 +685,26 @@ async def pay_shop_order(
     return loaded
 
 
-async def list_shop_orders(session: AsyncSession, *, user: User) -> list[ShopOrder]:
+async def list_shop_orders(
+    session: AsyncSession,
+    *,
+    user: User,
+    offset: int,
+    limit: int,
+) -> tuple[list[ShopOrder], int]:
     await expire_shop_orders(session)
     await session.commit()
-    statement = _order_statement().order_by(ShopOrder.created_at.desc())
+    statement = _order_statement().order_by(
+        ShopOrder.created_at.desc(),
+        ShopOrder.id.desc(),
+    )
     if "admin" not in user.role_names:
         statement = statement.where(ShopOrder.user_id == user.id)
-    return list(await session.scalars(statement))
+    total = int(
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    return list(await session.scalars(statement.offset(offset).limit(limit))), total
 
 
 async def get_shop_order(

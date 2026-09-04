@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import PaginatedResponse
+
 
 class ExperienceResponse(BaseModel):
     id: str
@@ -90,7 +92,7 @@ class ReservationResponse(BaseModel):
     allocations: list[ReservationAllocationResponse]
 
 
-class ReservationListResponse(BaseModel):
+class ReservationListResponse(PaginatedResponse):
     items: list[ReservationResponse]
 
 

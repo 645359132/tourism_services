@@ -222,9 +222,20 @@ async def submit_sos(
 async def sos_items(
     current_user: Annotated[User, Depends(require_emergency_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> SosListResponse:
+    items, total = await list_sos(
+        session,
+        user=current_user,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
     return SosListResponse(
-        items=[sos_response(item) for item in await list_sos(session, user=current_user)]
+        items=[sos_response(item) for item in items],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
 
 

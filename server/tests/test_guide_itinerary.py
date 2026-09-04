@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from starlette.websockets import WebSocketDisconnect
 
@@ -187,6 +187,29 @@ def test_guide_contracts_and_simulation_boundaries(guide_harness: GuideHarness) 
         "MEDIUM",
         "HIGH",
     }
+
+
+def test_attraction_catalog_is_not_cached_across_live_crowd_changes(
+    guide_harness: GuideHarness,
+) -> None:
+    before = guide_harness.client.get("/api/v1/guide/attractions").json()["items"][0]
+
+    async def change_wait(wait_minutes: int) -> None:
+        async with guide_harness.session_factory() as session:
+            await session.execute(
+                update(CrowdSnapshot)
+                .where(CrowdSnapshot.attraction_id == UUID(before["id"]))
+                .values(wait_minutes=wait_minutes)
+            )
+            await session.commit()
+
+    changed_wait = before["wait_minutes"] + 17
+    asyncio.run(change_wait(changed_wait))
+    try:
+        after = guide_harness.client.get("/api/v1/guide/attractions").json()["items"][0]
+        assert after["wait_minutes"] == changed_wait
+    finally:
+        asyncio.run(change_wait(before["wait_minutes"]))
 
 
 def test_schematic_route_hard_filters_wheelchair_edges(guide_harness: GuideHarness) -> None:

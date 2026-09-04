@@ -185,15 +185,19 @@ async def list_point_ledger(
     session: AsyncSession,
     *,
     user_id: UUID,
-) -> list[PointLedgerResponse]:
+    offset: int,
+    limit: int,
+) -> tuple[list[PointLedgerResponse], int]:
+    base = select(PointLedgerEntry).where(PointLedgerEntry.user_id == user_id)
+    total = int(await session.scalar(select(func.count()).select_from(base.subquery())) or 0)
     entries = list(
         await session.scalars(
-            select(PointLedgerEntry)
-            .where(PointLedgerEntry.user_id == user_id)
-            .order_by(PointLedgerEntry.created_at.desc(), PointLedgerEntry.id)
+            base.order_by(PointLedgerEntry.created_at.desc(), PointLedgerEntry.id)
+            .offset(offset)
+            .limit(limit)
         )
     )
-    return [ledger_response(entry) for entry in entries]
+    return [ledger_response(entry) for entry in entries], total
 
 
 def reward_response(reward: Reward) -> RewardResponse:

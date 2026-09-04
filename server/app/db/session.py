@@ -53,9 +53,18 @@ def _configure_sqlite_engine(engine: AsyncEngine, database_url: str) -> None:
 def get_engine() -> AsyncEngine:
     """Create the process-wide async engine on first database use."""
 
-    database_url = get_settings().database_url
+    settings = get_settings()
+    database_url = settings.database_url
     _ensure_sqlite_parent(database_url)
-    engine = create_async_engine(database_url, pool_pre_ping=True)
+    engine_options: dict[str, object] = {"pool_pre_ping": True}
+    if make_url(database_url).drivername.startswith("postgresql"):
+        engine_options.update(
+            pool_size=settings.database_pool_size,
+            max_overflow=settings.database_max_overflow,
+            pool_timeout=settings.database_pool_timeout_seconds,
+            pool_recycle=settings.database_pool_recycle_seconds,
+        )
+    engine = create_async_engine(database_url, **engine_options)
     _configure_sqlite_engine(engine, database_url)
     return engine
 

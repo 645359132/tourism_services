@@ -9,7 +9,7 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -746,7 +746,13 @@ async def create_experience_reservation(
     )
 
 
-async def list_reservations(session: AsyncSession, *, user: User) -> list[Reservation]:
+async def list_reservations(
+    session: AsyncSession,
+    *,
+    user: User,
+    offset: int,
+    limit: int,
+) -> tuple[list[Reservation], int]:
     await expire_reservation_holds(
         session,
         user_id=None if "admin" in user.role_names else user.id,
@@ -756,11 +762,15 @@ async def list_reservations(session: AsyncSession, *, user: User) -> list[Reserv
         select(Reservation)
         .execution_options(populate_existing=True)
         .options(selectinload(Reservation.allocations))
-        .order_by(Reservation.created_at.desc())
+        .order_by(Reservation.created_at.desc(), Reservation.id.desc())
     )
     if "admin" not in user.role_names:
         statement = statement.where(Reservation.user_id == user.id)
-    return list(await session.scalars(statement))
+    total = int(
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    return list(await session.scalars(statement.offset(offset).limit(limit))), total
 
 
 async def confirm_reservation(

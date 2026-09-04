@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -140,11 +140,24 @@ async def create_feedback(
     return loaded
 
 
-async def list_feedback(session: AsyncSession, *, user: User) -> list[Feedback]:
-    statement = _feedback_statement().order_by(Feedback.created_at.desc())
+async def list_feedback(
+    session: AsyncSession,
+    *,
+    user: User,
+    offset: int,
+    limit: int,
+) -> tuple[list[Feedback], int]:
+    statement = _feedback_statement().order_by(
+        Feedback.created_at.desc(),
+        Feedback.id.desc(),
+    )
     if not _is_staff(user):
         statement = statement.where(Feedback.user_id == user.id)
-    return list(await session.scalars(statement))
+    total = int(
+        await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery()))
+        or 0
+    )
+    return list(await session.scalars(statement.offset(offset).limit(limit))), total
 
 
 async def get_feedback(

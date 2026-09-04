@@ -868,6 +868,64 @@ def test_order_ownership_and_role_authorization(ticketing_harness: TicketingHarn
     assert role_forbidden.status_code == 403
 
 
+def test_order_pagination_filters_owner_before_limit(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    first_token = _login(ticketing_harness.client, "tourist_demo")["access_token"]
+    second_token = _login(ticketing_harness.client, "tourist_two")["access_token"]
+
+    async def create_slot() -> UUID:
+        async with ticketing_harness.session_factory() as session:
+            ticket_type = await session.scalar(select(TicketType).where(TicketType.code == "adult"))
+            assert ticket_type is not None
+            slot = TicketSlot(
+                ticket_type_id=ticket_type.id,
+                visit_date=datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=45),
+                start_time=time(13, 0),
+                end_time=time(14, 0),
+                is_active=True,
+            )
+            slot.inventory = TicketInventory(capacity=10, reserved=0, sold=0)
+            session.add(slot)
+            await session.commit()
+            return slot.id
+
+    slot_id = asyncio.run(create_slot())
+    first = _create_order(
+        ticketing_harness,
+        token=first_token,
+        slot_id=slot_id,
+        quantity=1,
+        key="pagination-owner-one-001",
+    )
+    second = _create_order(
+        ticketing_harness,
+        token=second_token,
+        slot_id=slot_id,
+        quantity=1,
+        key="pagination-owner-two-001",
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    second_page = ticketing_harness.client.get(
+        "/api/v1/ticketing/orders?page=1&page_size=1",
+        headers=_bearer(second_token),
+    )
+    assert second_page.status_code == 200
+    body = second_page.json()
+    assert body["items"] == [second.json()]
+    assert body["page"] == 1
+    assert body["page_size"] == 1
+    assert body["total"] == 1
+
+    too_large = ticketing_harness.client.get(
+        "/api/v1/ticketing/orders?page_size=101",
+        headers=_bearer(first_token),
+    )
+    assert too_large.status_code == 422
+
+
 def test_expired_reservation_releases_inventory_and_cannot_be_paid(
     ticketing_harness: TicketingHarness,
 ) -> None:
