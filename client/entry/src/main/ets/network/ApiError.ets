@@ -76,5 +76,9 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
   if (statusCode >= 500 && statusCode <= 599) {
     return new ApiErrorInfo(ApiErrorCode.SERVER, '服务暂时不可用，请稍后重试', statusCode, true, serverCode);
   }
+  if (statusCode === 0) {
+    return new ApiErrorInfo(ApiErrorCode.OFFLINE,
+      '无法连接服务，请检查开发环境 API 地址和后端状态', statusCode, true, serverCode);
+  }
   return new ApiErrorInfo(ApiErrorCode.UNKNOWN, '发生未知错误，请稍后重试', statusCode, false, serverCode);
 }

@@ -155,17 +155,17 @@ $env:DEVECO_SDK_HOME = Join-Path $devecoRoot 'sdk'
 
 CLI 产物是 unsigned HAP。真机运行前须在 DevEco Studio 配置本地签名、连接可见目标，再由 IDE 分别运行 `entry` 和 `entry@ohosTest`；不要直接用 `hdc install` 安装 unsigned HAP。
 
-客户端 API 基址按运行位置设置：
+客户端开发构建默认使用 DevEco 模拟器地址；其他运行位置按下表切换：
 
 | 运行位置 | API 基址 |
 | --- | --- |
 | Windows 本机、宿主机测试 | `http://127.0.0.1:8000/api/v1` |
-| DevEco 模拟器 | `http://10.0.2.2:8000/api/v1` |
+| DevEco 模拟器（默认） | `http://10.0.2.2:8000/api/v1` |
 | 局域网真机 | `http://<开发机局域网 IPv4>:8000/api/v1` |
 
 真机与开发机应位于可互通网络；确认 Compose 已发布 `8000` 端口，并仅在可信网络为 Windows 防火墙放行入站 TCP `8000`。不要把 `127.0.0.1` 配给真机。
 应用内可通过“我的 → 开发环境 API 地址”修改当前进程使用的基址；该值必须包含
-`/api/v1`。预期 CLI 结果为 Code Linter `No defects found`、Hypium 41 passed，以及
+`/api/v1`。预期 CLI 结果为 Code Linter `No defects found`、Hypium 43 passed，以及
 `entry@default`、含 4 个用例的 `entry@ohosTest` 两个 HAP 构建成功。测试包在模拟器上的
 执行由测试人员在 DevEco Studio 完成本地签名后进行。
 

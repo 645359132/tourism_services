@@ -17,6 +17,7 @@ import {
 import { TicketOrderStatus, TicketQrResponse, TicketSlot } from '../main/ets/models/TicketModels';
 import { CartItem, PointsReward, ShopOrder, ShopOrderItem, ShopOrderStatus, ShopProduct } from '../main/ets/models/ShopModels';
 import { FeedbackKind, FacilityItem } from '../main/ets/models/ServiceModels';
+import { AppConfig } from '../main/ets/config/AppConfig';
 import {
   CachedOfflineAsset,
   AppliedSyncRecord,
@@ -154,6 +155,18 @@ export default function tourismBusinessRulesTest() {
       const timeout: ApiErrorInfo = mapApiError(0, 'socket timed out', false);
       expect(timeout.code).assertEqual(ApiErrorCode.TIMEOUT);
       expect(timeout.retriable).assertTrue();
+    });
+
+    it('mapsConnectionRefusalToActionableNetworkError', 0, () => {
+      const refused: ApiErrorInfo = mapApiError(0, 'connect ECONNREFUSED', false);
+      expect(refused.code).assertEqual(ApiErrorCode.OFFLINE);
+      expect(refused.retriable).assertTrue();
+      expect(refused.userMessage)
+        .assertEqual('无法连接服务，请检查开发环境 API 地址和后端状态');
+    });
+
+    it('usesDevEcoEmulatorApiByDefault', 0, () => {
+      expect(AppConfig.getApiBaseUrl()).assertEqual('http://10.0.2.2:8000/api/v1');
     });
 
     it('validatesLoginInputs', 0, () => {

@@ -1,5 +1,5 @@
 export class AppConfig {
-  private static apiBaseUrl: string = 'http://127.0.0.1:8000/api/v1';
+  private static apiBaseUrl: string = 'http://10.0.2.2:8000/api/v1';
 
   static readonly CONNECT_TIMEOUT_MS: number = 6000;
   static readonly READ_TIMEOUT_MS: number = 10000;

@@ -85,7 +85,7 @@ export struct ProfilePage {
       Column({ space: 8 }) {
         Text('开发环境 API 地址').width('100%').fontSize(this.largeText ? 18 : 14).fontWeight(FontWeight.Medium)
           .fontColor(this.highContrast ? '#FFFFFF' : $r('app.color.text_primary'))
-        TextInput({ text: this.apiUrl, placeholder: 'http://127.0.0.1:8000/api/v1' }).width('100%')
+        TextInput({ text: this.apiUrl, placeholder: 'http://10.0.2.2:8000/api/v1' }).width('100%')
           .onChange((value: string) => { this.apiUrl = value; })
         Row() {
           Text(this.configFeedback).fontSize(this.largeText ? 13 : 9)
