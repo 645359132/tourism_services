@@ -1,4 +1,7 @@
 import {
+  FaceDemoSample,
+  FaceDemoVerifyRequest,
+  FaceDemoVerifyResponse,
   TicketOrder,
   TicketOrderListResponse,
   TicketQrResponse,
@@ -101,6 +104,12 @@ export class TicketService {
       `/ticketing/orders/${encodeURIComponent(orderId)}/pay`, ApiMethod.POST, JSON.stringify(payload), true, 0));
   }
 
+  cancelOrder(orderId: string, idempotencyKey: string): Promise<NetworkResult<TicketOrder>> {
+    const payload: IdempotencyPayload = new IdempotencyPayload(idempotencyKey);
+    return this.client.request<TicketOrder>(new ApiRequest(
+      `/ticketing/orders/${encodeURIComponent(orderId)}/cancel`, ApiMethod.POST, JSON.stringify(payload), true, 0));
+  }
+
   refundOrder(orderId: string, reason: string, idempotencyKey: string): Promise<NetworkResult<TicketOrder>> {
     const payload: RefundPayload = new RefundPayload(reason, idempotencyKey);
     return this.client.request<TicketOrder>(new ApiRequest(
@@ -117,5 +126,14 @@ export class TicketService {
   getTicketQr(ticketId: string): Promise<NetworkResult<TicketQrResponse>> {
     return this.client.request<TicketQrResponse>(new ApiRequest(
       `/ticketing/tickets/${encodeURIComponent(ticketId)}/qr`, ApiMethod.GET));
+  }
+
+  verifyFaceDemo(ticketId: string, sample: FaceDemoSample,
+    consent: boolean): Promise<NetworkResult<FaceDemoVerifyResponse>> {
+    // 该调用只进入“无生物信息”的演示 Provider。即使返回匹配，也不会放行或核销电子票。
+    const payload: FaceDemoVerifyRequest = new FaceDemoVerifyRequest(sample, consent);
+    return this.client.request<FaceDemoVerifyResponse>(new ApiRequest(
+      `/ticketing/tickets/${encodeURIComponent(ticketId)}/face-demo/verify`,
+      ApiMethod.POST, JSON.stringify(payload), true, 0));
   }
 }

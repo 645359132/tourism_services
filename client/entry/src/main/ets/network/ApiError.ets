@@ -98,6 +98,51 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
       case 'SESSION_CLOSED':
         conflictMessage = '所选场次已关闭，请选择其他时段';
         break;
+      case 'SLOT_CLOSED':
+        conflictMessage = '所选门票时段已关闭，请重新选择';
+        break;
+      case 'ORDER_NOT_PAYABLE':
+        conflictMessage = '订单已过期或状态已变化，当前无法支付';
+        break;
+      case 'REFUND_WINDOW_CLOSED':
+        conflictMessage = '已超过服务端返回的退票截止时间，当前无法退款';
+        break;
+      case 'ORDER_NOT_REFUNDABLE':
+        conflictMessage = '仅已支付的有效订单可以申请退款';
+        break;
+      case 'TICKET_ALREADY_USED':
+        conflictMessage = '电子票已核验或失效，无法办理退票或改签';
+        break;
+      case 'REFUND_CONFLICT':
+        conflictMessage = '订单或库存状态已变化，请刷新订单后重试';
+        break;
+      case 'ORDER_NOT_CANCELLABLE':
+        conflictMessage = '仅待支付订单可以取消，请刷新订单状态';
+        break;
+      case 'ORDER_NOT_RESCHEDULABLE':
+        conflictMessage = '仅持有未核验电子票的已支付订单可以改签';
+        break;
+      case 'SAME_SLOT':
+        conflictMessage = '目标时段与当前时段相同，请选择其他时段';
+        break;
+      case 'TICKET_TYPE_MISMATCH':
+        conflictMessage = '目标时段的票种不同，请选择同一票种';
+        break;
+      case 'RESCHEDULE_PRICE_DELTA_UNSUPPORTED':
+        conflictMessage = '目标时段价格不同，演示系统暂不支持补差价改签';
+        break;
+      case 'RESCHEDULE_CONFLICT':
+        conflictMessage = '改签期间订单或库存已变化，请刷新后重试';
+        break;
+      case 'TICKET_NOT_VALID':
+        conflictMessage = '电子票已核验、失效或状态已变化';
+        break;
+      case 'TICKET_OUTSIDE_VALIDATION_WINDOW':
+        conflictMessage = '当前不在该电子票的可核验时段内';
+        break;
+      case 'FACE_DEMO_TICKET_NOT_ELIGIBLE':
+        conflictMessage = '电子票状态已变化，当前无法进行人脸核验演示';
+        break;
       default:
         break;
     }

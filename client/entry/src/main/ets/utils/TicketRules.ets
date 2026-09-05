@@ -1,7 +1,13 @@
-import { TicketOrderStatus, TicketSlot } from '../models/TicketModels';
+import {
+  ElectronicTicketStatus,
+  TicketOrder,
+  TicketOrderStatus,
+  TicketSlot
+} from '../models/TicketModels';
 
 export enum TicketOrderAction {
   PAY = 'PAY',
+  CANCEL = 'CANCEL',
   REFUND = 'REFUND',
   RESCHEDULE = 'RESCHEDULE',
   SHOW_QR = 'SHOW_QR'
@@ -101,7 +107,8 @@ export function validateTicketQuantity(quantity: number, remaining: number): Tic
 }
 
 export function canApplyTicketAction(status: TicketOrderStatus, action: TicketOrderAction): boolean {
-  if (action === TicketOrderAction.PAY) {
+  // 门票状态机把“占库存但未付款”和“已售出票”分开处理：取消只释放 reserved，退款才回补 sold。
+  if (action === TicketOrderAction.PAY || action === TicketOrderAction.CANCEL) {
     return status === TicketOrderStatus.PENDING_PAYMENT;
   }
   if (action === TicketOrderAction.REFUND || action === TicketOrderAction.RESCHEDULE ||
@@ -119,10 +126,72 @@ export function transitionTicketOrderStatus(status: TicketOrderStatus,
   if (action === TicketOrderAction.PAY) {
     return TicketOrderStatus.PAID;
   }
+  if (action === TicketOrderAction.CANCEL) {
+    return TicketOrderStatus.CANCELLED;
+  }
   if (action === TicketOrderAction.REFUND) {
     return TicketOrderStatus.REFUNDED;
   }
   return status;
+}
+
+export function ticketOrderRenderKey(order: TicketOrder): string {
+  // ArkUI 的 ForEach 会按 key 复用组件。改签不会改变 PAID 状态，闸机核验也不会改变
+  // 订单状态，因此 key 还必须覆盖时段及每张电子票的状态，确保卡片立即重建。
+  let ticketFingerprint: string = '';
+  for (let index: number = 0; index < order.tickets.length; index++) {
+    ticketFingerprint += `:${order.tickets[index].id}:${order.tickets[index].status}`;
+  }
+  return `${order.id}:${order.status}:${order.slot_id}:${order.visit_date}:${order.start_time}:` +
+    `${order.end_time}:${order.refund_cutoff_hours}:${order.refund_deadline_at}:` +
+    `${order.refundable}${ticketFingerprint}`;
+}
+
+export function hasRequiredIssuedTickets(order: TicketOrder): boolean {
+  if (order.status !== TicketOrderStatus.PAID || order.tickets.length === 0) {
+    return false;
+  }
+  let issuedCount: number = 0;
+  for (let index: number = 0; index < order.tickets.length; index++) {
+    if (order.tickets[index].status === ElectronicTicketStatus.ISSUED) {
+      issuedCount++;
+    }
+  }
+  // 改签会保留历史 VOID 票用于审计；只要当前 ISSUED 数量等于订单数量即可继续退改。
+  return issuedCount === order.quantity;
+}
+
+export function canRefundTicketOrder(order: TicketOrder): boolean {
+  return hasRequiredIssuedTickets(order) && order.refundable;
+}
+
+export function normalizeCachedTicketOrders(payload: string): TicketOrder[] {
+  try {
+    const orders: TicketOrder[] = JSON.parse(payload) as TicketOrder[];
+    if (!Array.isArray(orders)) {
+      return [];
+    }
+    for (let index: number = 0; index < orders.length; index++) {
+      const order: TicketOrder = orders[index];
+      // v1 缓存没有退款策略字段。显式补默认值，覆盖安装后离线打开订单不会把
+      // undefined 传入时间格式器；旧缓存保持只读且不凭空获得退款资格。
+      if (typeof order.refund_cutoff_hours !== 'number' || order.refund_cutoff_hours < 0) {
+        order.refund_cutoff_hours = 0;
+      }
+      if (typeof order.refund_deadline_at !== 'string') {
+        order.refund_deadline_at = null;
+      }
+      if (typeof order.refundable !== 'boolean') {
+        order.refundable = false;
+      }
+      if (!Array.isArray(order.tickets)) {
+        order.tickets = [];
+      }
+    }
+    return orders;
+  } catch (error) {
+    return [];
+  }
 }
 
 export function detectInventoryChange(previous: TicketSlot | null, current: TicketSlot): InventoryChangeResult {

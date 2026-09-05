@@ -1,6 +1,6 @@
 # API 与实时通信契约
 
-本文档描述当前服务端已经注册的 105 个 REST operations 与 3 条 WebSocket 接口。REST 路径已逐项与
+本文档描述当前服务端已经注册的 107 个 REST operations 与 3 条 WebSocket 接口。REST 路径已逐项与
 `server/app/api/routes/` 中的装饰器及应用生成的 OpenAPI `paths` 核对；请求和响应
 字段的最终机器可读定义以运行中服务的 OpenAPI 为准。WebSocket 不属于 OpenAPI，完整
 握手和事件约定见本文后半部分。
@@ -154,6 +154,7 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 |---|---|---|
 | `ai` | `rules` | 确定性本地规则，没有外部 AI |
 | `crowd` | `simulated` | 合成人流数据 |
+| `face_gate` | `demo_no_biometrics` | 不调用摄像头、不处理生物信息且不放行的身份匹配演示 |
 | `gate` | `demo` | 没有物理闸机 |
 | `map` | `schematic` | 本地示意图，没有实时地图商 |
 | `merchant` | `demo` | 本地演示商户数据 |
@@ -196,10 +197,22 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 | GET | `/api/v1/ticketing/orders` | Bearer / tourist | 分页列出自己的门票订单 |
 | GET | `/api/v1/ticketing/orders/{order_id}` | Bearer / tourist | 获取自己的门票订单 |
 | POST | `/api/v1/ticketing/orders/{order_id}/pay` | Bearer / tourist | 幂等演示支付并签发电子票 |
+| POST | `/api/v1/ticketing/orders/{order_id}/cancel` | Bearer / tourist | 取消待支付订单并原子释放预占库存；终态重放不重复释放 |
 | POST | `/api/v1/ticketing/orders/{order_id}/refund` | Bearer / tourist | 按截止规则幂等退款 |
 | POST | `/api/v1/ticketing/orders/{order_id}/reschedule` | Bearer / tourist | 幂等改签到目标场次 |
 | GET | `/api/v1/ticketing/tickets/{ticket_id}/qr` | Bearer / tourist | 获取自己的短期 QR JWT；响应禁止缓存 |
+| POST | `/api/v1/ticketing/tickets/{ticket_id}/face-demo/verify` | Bearer / tourist | 对自己的有效电子票执行无生物信息的人脸接入演示；不核销、不放行 |
 | POST | `/api/v1/ticketing/gate/validate` | Bearer / admin | 以 `request_id` 幂等执行演示闸机核验 |
+
+`TicketOrderResponse` 对所有订单统一返回 `refund_cutoff_hours`、
+`refund_deadline_at`（UTC）和 `refundable`。客户端应以这些服务端字段展示退票规则与
+按钮状态，不能把默认的 2 小时写死；运维覆盖 `TICKET_REFUND_CUTOFF_HOURS` 后契约会同步变化。
+
+人脸演示请求只接受 `sample=OWNER|OTHER` 与 `consent=true`。响应始终携带
+`provider=demo_face_gate`、`is_demo=true`、`biometric_processed=false`、
+`admission_granted=false` 和免责声明。`DEMO_MATCHED` 只说明演示适配器命中了
+“本人”样本，不代表真实人脸识别、活体检测、闸机放行或电子票核销；真正核销仍只发生
+在管理员授权的 `/ticketing/gate/validate` 事务中。
 
 ### 导览、设施与行程
 
@@ -207,7 +220,7 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 |---|---|---|---|
 | GET | `/api/v1/guide/attractions` | Public | 景点列表及当前人流摘要 |
 | GET | `/api/v1/guide/attractions/{attraction_id}` | Public | 景点详情 |
-| GET | `/api/v1/guide/attractions/{attraction_id}/narrations` | Public | 文化讲解列表 |
+| GET | `/api/v1/guide/attractions/{attraction_id}/narrations` | Public | 文化讲解列表；含文字、时长、`audio_url` 与 `provider_mode` 音频扩展字段 |
 | GET | `/api/v1/guide/map` | Public | 本地示意地图节点和边 |
 | GET | `/api/v1/guide/crowd` | Public | 最新模拟人流快照 |
 | POST | `/api/v1/guide/routes/plan` | Public | 按无障碍/婴儿车约束计算示意路线 |

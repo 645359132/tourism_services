@@ -537,6 +537,7 @@ def test_capabilities_are_public_stable_metadata(auth_harness: AuthHarness) -> N
     assert {name: provider["mode"] for name, provider in body["providers"].items()} == {
         "ai": "rules",
         "crowd": "simulated",
+        "face_gate": "demo_no_biometrics",
         "gate": "demo",
         "map": "schematic",
         "merchant": "demo",

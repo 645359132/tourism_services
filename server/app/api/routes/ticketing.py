@@ -12,7 +12,10 @@ from app.core.coordination import coordination_key
 from app.db.models.user import User
 from app.db.session import get_session
 from app.schemas.ticketing import (
+    CancelOrderRequest,
     CreateOrderRequest,
+    FaceDemoVerifyRequest,
+    FaceDemoVerifyResponse,
     GateValidationRequest,
     GateValidationResponse,
     PayOrderRequest,
@@ -27,6 +30,7 @@ from app.schemas.ticketing import (
     TicketTypeListResponse,
 )
 from app.services.ticketing import (
+    cancel_pending_ticket_order,
     create_ticket_order,
     create_ticket_qr_response,
     get_ticket_order,
@@ -39,6 +43,7 @@ from app.services.ticketing import (
     refund_ticket_order,
     reschedule_ticket_order,
     validate_ticket_at_gate,
+    verify_ticket_face_demo,
 )
 
 router = APIRouter(prefix="/ticketing", tags=["ticketing"])
@@ -114,11 +119,15 @@ async def create_order(
             idempotency_key=payload.idempotency_key,
             settings=request.app.state.settings,
         )
-    return order_response(order)
+    return order_response(
+        order,
+        refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+    )
 
 
 @router.get("/orders", response_model=TicketOrderListResponse)
 async def orders(
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
     page: Annotated[int, Query(ge=1)] = 1,
@@ -131,7 +140,13 @@ async def orders(
         limit=page_size,
     )
     return TicketOrderListResponse(
-        items=[order_response(order) for order in found],
+        items=[
+            order_response(
+                order,
+                refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+            )
+            for order in found
+        ],
         page=page,
         page_size=page_size,
         total=total,
@@ -141,11 +156,15 @@ async def orders(
 @router.get("/orders/{order_id}", response_model=TicketOrderResponse)
 async def order_detail(
     order_id: UUID,
+    request: Request,
     current_user: Annotated[User, Depends(require_tourist)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TicketOrderResponse:
     order = await get_ticket_order(session, order_id=order_id, user=current_user)
-    return order_response(order)
+    return order_response(
+        order,
+        refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+    )
 
 
 @router.post("/orders/{order_id}/pay", response_model=TicketOrderResponse)
@@ -170,7 +189,37 @@ async def pay_order(
             user=current_user,
             idempotency_key=payload.idempotency_key,
         )
-    return order_response(order)
+    return order_response(
+        order,
+        refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+    )
+
+
+@router.post("/orders/{order_id}/cancel", response_model=TicketOrderResponse)
+async def cancel_order(
+    order_id: UUID,
+    payload: CancelOrderRequest,
+    request: Request,
+    current_user: Annotated[User, Depends(require_tourist)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TicketOrderResponse:
+    async with request.app.state.coordination_locks.hold(
+        coordination_key(
+            "idempotency:ticket-cancel",
+            current_user.id,
+            payload.idempotency_key,
+        ),
+        coordination_key("inventory:ticket-order", order_id),
+    ):
+        order = await cancel_pending_ticket_order(
+            session,
+            order_id=order_id,
+            user=current_user,
+        )
+    return order_response(
+        order,
+        refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+    )
 
 
 @router.post("/orders/{order_id}/refund", response_model=TicketOrderResponse)
@@ -197,7 +246,10 @@ async def refund_order(
             idempotency_key=payload.idempotency_key,
             settings=request.app.state.settings,
         )
-    return order_response(order)
+    return order_response(
+        order,
+        refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+    )
 
 
 @router.post("/orders/{order_id}/reschedule", response_model=TicketOrderResponse)
@@ -225,7 +277,10 @@ async def reschedule_order(
             idempotency_key=payload.idempotency_key,
             walking_buffer_minutes=request.app.state.settings.reservation_walking_buffer_minutes,
         )
-    return order_response(order)
+    return order_response(
+        order,
+        refund_cutoff_hours=request.app.state.settings.ticket_refund_cutoff_hours,
+    )
 
 
 @router.get("/tickets/{ticket_id}/qr", response_model=TicketQrResponse)
@@ -265,3 +320,26 @@ async def gate_validate(
             validator=current_user,
             settings=request.app.state.settings,
         )
+
+
+@router.post(
+    "/tickets/{ticket_id}/face-demo/verify",
+    response_model=FaceDemoVerifyResponse,
+)
+async def face_demo_verify(
+    ticket_id: UUID,
+    payload: FaceDemoVerifyRequest,
+    response: Response,
+    current_user: Annotated[User, Depends(require_tourist)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> FaceDemoVerifyResponse:
+    """运行无生物信息的人脸接入演示; 该端点不会改变电子票状态。"""
+
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return await verify_ticket_face_demo(
+        session,
+        ticket_id=ticket_id,
+        user=current_user,
+        sample=payload.sample,
+    )

@@ -33,6 +33,7 @@ import {
   validateShare
 } from '../utils/ShopRules';
 import { PendingIdempotentOperation, formatMoney } from '../utils/TicketRules';
+import { formatShanghaiDateTime } from '../utils/DateTimeRules';
 import { AuthStore } from '../stores/AuthStore';
 import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
 import { isWideWindow } from '../utils/ResponsiveRules';
@@ -549,7 +550,8 @@ export struct MallPage {
             Text(`provider=${order.provider}/demo=${order.is_demo} · 未接真实支付/物流`).width('100%')
               .fontSize(9).fontColor($r('app.color.warning'))
             if (order.status === ShopOrderStatus.EXPIRED) {
-              Text(`订单保留已过期${order.expires_at === null ? '' : ` · ${order.expires_at}`}`)
+              Text(`订单保留已过期${order.expires_at === null ? '' :
+                ` · ${formatShanghaiDateTime(order.expires_at)}`}`)
                 .width('100%').fontSize(10).fontColor($r('app.color.error'))
             }
             if (canPayShopOrder(order.status)) {

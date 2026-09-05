@@ -8,7 +8,7 @@ import { AccessibilitySettings, AccessibilityStore } from '../stores/Accessibili
 import { AuthStore } from '../stores/AuthStore';
 import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
 
-enum ProfileSection {
+export enum ProfileSection {
   OVERVIEW = 0,
   SUPPORT = 1,
   GROUP = 2,
@@ -21,10 +21,11 @@ enum ProfileSection {
 export struct ProfilePage {
   @Link loggedIn: boolean;
   @Link displayName: string;
+  // 由根页面持有当前页签，使首页等外部入口可以稳定直达具体服务。
+  @Link section: ProfileSection;
   onLoginTap: () => void = (): void => {};
   onAccessibilityChanged: (largeText: boolean, highContrast: boolean) => void =
     (_largeText: boolean, _highContrast: boolean): void => {};
-  @State section: ProfileSection = ProfileSection.OVERVIEW;
   @State largeText: boolean = false;
   @State highContrast: boolean = false;
   @State apiUrl: string = AppConfig.getApiBaseUrl();

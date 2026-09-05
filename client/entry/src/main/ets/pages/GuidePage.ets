@@ -22,6 +22,7 @@ import {
   shouldAcceptCrowdSequence
 } from '../utils/GuideRules';
 import { ContentState } from '../models/AppModels';
+import { formatShanghaiDateTime } from '../utils/DateTimeRules';
 
 @Component
 export struct GuidePage {
@@ -455,7 +456,7 @@ export struct GuidePage {
               Text('低').fontColor($r('app.color.success'))
               Text('中').fontColor($r('app.color.warning'))
               Text('高').fontColor($r('app.color.error'))
-              Text(`模拟热力快照 ${this.crowdCapturedAt}`)
+              Text(`模拟热力快照 ${formatShanghaiDateTime(this.crowdCapturedAt)}`)
                 .fontSize(11)
                 .fontColor($r('app.color.text_secondary'))
                 .layoutWeight(1)
@@ -592,7 +593,7 @@ export struct GuidePage {
                       .fontWeight(FontWeight.Medium)
                       .fontColor($r('app.color.text_primary'))
                       .layoutWeight(1)
-                    Button(this.playingNarrationId === narration.id ? '暂停' : '播放文字讲解')
+                    Button(this.playingNarrationId === narration.id ? '收起文字讲解' : '展开文字讲解')
                       .fontSize(11)
                       .fontColor($r('app.color.primary'))
                       .backgroundColor($r('app.color.surface_tint'))
@@ -606,7 +607,11 @@ export struct GuidePage {
                     .fontSize(12)
                     .fontColor($r('app.color.text_secondary'))
                     .maxLines(this.playingNarrationId === narration.id ? 8 : 2)
-                  Text(`provider=${narration.provider_mode} · demo=${narration.is_demo} · 未接入真实音频版权源`)
+                  // audio_url 是已落地的服务端扩展接口；空值时只提供策展文字，
+                  // 不能把展开/收起文本包装成音频播放，也不请求摄像头或麦克风权限。
+                  Text(narration.audio_url.length === 0 ?
+                    `文字讲解 · provider=${narration.provider_mode} · 音频接口暂未提供可播放地址` :
+                    `音频地址已由 ${narration.provider_mode} 提供 · 当前页面使用文字回退`)
                     .width('100%')
                     .fontSize(10)
                     .fontColor($r('app.color.warning'))

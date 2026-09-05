@@ -1,4 +1,5 @@
 import {
+  AvailabilityBucket,
   ExperienceSession,
   QueueEventEnvelope,
   QueueStatus,
@@ -225,6 +226,23 @@ export function validateTimedBooking(startsAt: string, partySize: number): Booki
     return new BookingRuleResult(false, '请选择有效时段并检查同行人数');
   }
   return new BookingRuleResult(true, '');
+}
+
+export function isCurrentAvailableTimedBucket(availability: AvailabilityBucket[], offerId: string,
+  startsAt: string, dateFrom: string, dateTo: string): boolean {
+  if (offerId.length === 0 || startsAt.length === 0 ||
+    !validateBookingDate(dateFrom).valid || !validateBookingDate(dateTo).valid || dateFrom > dateTo) {
+    return false;
+  }
+  // 时段必须仍属于当前产品且有余量，禁止把切换产品前遗留的 start_at 提交给新产品。
+  for (let index: number = 0; index < availability.length; index++) {
+    const bucket: AvailabilityBucket = availability[index];
+    if (bucket.resource_id === offerId && bucket.start_at === startsAt && bucket.remaining > 0 &&
+      bucket.business_date >= dateFrom && bucket.business_date <= dateTo) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function validateReview(rating: number, content: string): BookingRuleResult {

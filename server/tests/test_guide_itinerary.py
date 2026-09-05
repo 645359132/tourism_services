@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -19,13 +20,15 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.config import Settings
 from app.core.security import hash_password
 from app.db.base import Base
-from app.db.models.guide import Attraction, CrowdSnapshot, Itinerary, ItineraryItem
+from app.db.models.guide import Attraction, CrowdSnapshot, Itinerary, ItineraryItem, Narration
 from app.db.models.role import Role, UserRole
 from app.db.models.ticketing import TicketSlot, TicketType
 from app.db.models.user import User
 from app.db.session import get_session
 from app.main import create_app
 from app.scripts.seed import DEMO_PASSWORD, seed_database
+from app.services.guide import list_narrations
+from app.services.itinerary import itinerary_response
 
 
 @dataclass(slots=True)
@@ -34,6 +37,53 @@ class GuideHarness:
     application: FastAPI
     session_factory: async_sessionmaker[AsyncSession]
     database_path: Path
+
+
+def test_itinerary_response_normalizes_aware_offsets_to_utc() -> None:
+    itinerary_id = uuid4()
+    local_start = datetime(2026, 9, 5, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    itinerary = Itinerary(
+        id=itinerary_id,
+        user_id=uuid4(),
+        name="UTC response test",
+        visit_date=date(2026, 9, 5),
+        start_time=time(15, 0),
+        duration_minutes=60,
+        interests=[],
+        companion_type="solo",
+        fitness_level="medium",
+        accessible=False,
+        status="ACTIVE",
+        source="rules",
+        revision=1,
+        total_score=10,
+        explanation=[],
+        is_complete=True,
+        unscheduled_reasons=[],
+    )
+    itinerary.items = [
+        ItineraryItem(
+            id=uuid4(),
+            itinerary_id=itinerary_id,
+            ordinal=1,
+            kind="ATTRACTION",
+            ref_type="ATTRACTION",
+            ref_id=uuid4(),
+            title="时区测试景点",
+            start_at=local_start,
+            end_at=local_start + timedelta(hours=1),
+            locked=False,
+            crowd_level="LOW",
+            walk_minutes=0,
+            explanation=[],
+        )
+    ]
+
+    response = itinerary_response(itinerary)
+
+    assert response.items[0].start_at == datetime(2026, 9, 5, 7, 0, tzinfo=UTC)
+    assert response.items[0].end_at == datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
+    assert response.items[0].start_at.utcoffset() == timedelta(0)
 
 
 @pytest.fixture(scope="module")
@@ -181,12 +231,43 @@ def test_guide_contracts_and_simulation_boundaries(guide_harness: GuideHarness) 
     assert crowd.json()["source"] == "simulated"
     assert crowd.json()["is_demo"] is True
     assert crowd.json()["sequence"] == 1
+    captured_at = datetime.fromisoformat(crowd.json()["captured_at"].replace("Z", "+00:00"))
+    assert captured_at.utcoffset() == timedelta(0)
+    assert all(
+        datetime.fromisoformat(item["captured_at"].replace("Z", "+00:00")).utcoffset()
+        == timedelta(0)
+        for item in crowd.json()["items"]
+    )
     assert all(item["source"] == "simulated" for item in crowd.json()["items"])
     assert {item["level"] for item in crowd.json()["items"]} == {
         "LOW",
         "MEDIUM",
         "HIGH",
     }
+
+
+def test_narration_response_preserves_persisted_provider_mode(
+    guide_harness: GuideHarness,
+) -> None:
+    async def exercise_provider_seam() -> tuple[str, str, bool]:
+        async with guide_harness.session_factory() as session:
+            narration = await session.scalar(select(Narration).order_by(Narration.id))
+            assert narration is not None
+            narration.provider_mode = "packaged_audio_demo"
+            narration.audio_url = "/demo-assets/narration.wav"
+            await session.flush()
+
+            responses = await list_narrations(session, narration.attraction_id)
+            response = next(item for item in responses if item.id == str(narration.id))
+            # 回滚测试注入, 避免模块级 fixture 中的其他导览用例受到污染。
+            await session.rollback()
+            return response.provider_mode, response.audio_url, response.is_demo
+
+    assert asyncio.run(exercise_provider_seam()) == (
+        "packaged_audio_demo",
+        "/demo-assets/narration.wav",
+        True,
+    )
 
 
 def test_attraction_catalog_is_not_cached_across_live_crowd_changes(
@@ -271,6 +352,13 @@ def test_rules_planner_is_deterministic_and_owned(guide_harness: GuideHarness) -
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["source"] == "rules"
+    assert all(
+        datetime.fromisoformat(item["start_at"].replace("Z", "+00:00")).utcoffset()
+        == timedelta(0)
+        and datetime.fromisoformat(item["end_at"].replace("Z", "+00:00")).utcoffset()
+        == timedelta(0)
+        for item in first.json()["items"]
+    )
     assert first.json()["total_score"] == second.json()["total_score"]
     assert [item["ref_id"] for item in first.json()["items"]] == [
         item["ref_id"] for item in second.json()["items"]

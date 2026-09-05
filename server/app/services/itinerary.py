@@ -54,7 +54,9 @@ def _error(status_code: int, code: str, message: str) -> AppError:
 
 
 def _aware(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _overlaps(
@@ -113,8 +115,9 @@ def itinerary_response(itinerary: Itinerary) -> ItineraryResponse:
                 kind=item.kind,
                 ref_id=str(item.ref_id),
                 title=item.title,
-                start_at=item.start_at,
-                end_at=item.end_at,
+                # SQLite 读回 timezone=True 字段时可能丢失 tzinfo; 响应边界统一补回 UTC。
+                start_at=_aware(item.start_at),
+                end_at=_aware(item.end_at),
                 locked=item.locked,
                 crowd_level=item.crowd_level,
                 walk_minutes=item.walk_minutes,

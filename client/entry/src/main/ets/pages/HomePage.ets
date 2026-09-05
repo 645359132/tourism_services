@@ -7,9 +7,12 @@ export struct HomePage {
   onTicketTap: () => void = (): void => {};
   onQueueTap: () => void = (): void => {};
   onHospitalityTap: () => void = (): void => {};
+  onTripTap: () => void = (): void => {};
+  onGuideTap: () => void = (): void => {};
+  onEmergencyTap: () => void = (): void => {};
 
   @Builder
-  private quickService(icon: string, title: string, caption: string) {
+  private quickService(icon: string, title: string, caption: string, onTap: () => void) {
     Column({ space: 7 }) {
       Text(icon)
         .fontSize(26)
@@ -28,13 +31,8 @@ export struct HomePage {
     .borderRadius(18)
     .backgroundColor($r('app.color.surface'))
     .onClick(() => {
-      if (title === '门票预约') {
-        this.onTicketTap();
-      } else if (title === '智慧排队') {
-        this.onQueueTap();
-      } else if (title === '餐住预订') {
-        this.onHospitalityTap();
-      }
+      // 首页只传递明确的业务意图，避免以后修改展示文案时悄悄破坏导航。
+      onTap();
     })
   }
 
@@ -76,10 +74,12 @@ export struct HomePage {
               .fontSize(13)
               .fontColor($r('app.color.primary'))
               .backgroundColor(Color.White)
+              .onClick(() => { this.onTripTap(); })
             Button('查看实时人流')
               .fontSize(13)
               .fontColor(Color.White)
               .backgroundColor('#22FFFFFF')
+              .onClick(() => { this.onGuideTap(); })
           }
           .width('100%')
           .margin({ top: 8 })
@@ -94,18 +94,14 @@ export struct HomePage {
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
-            .layoutWeight(1)
-          Text('全部服务  ›')
-            .fontSize(13)
-            .fontColor($r('app.color.primary'))
         }
         .width('100%')
 
         Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween, alignContent: FlexAlign.SpaceBetween }) {
-          this.quickService('🎫', '门票预约', '分时库存与动态价格')
-          this.quickService('⏱', '智慧排队', '等待变化联动行程')
-          this.quickService('🏨', '餐住预订', '住玩与餐玩组合')
-          this.quickService('🆘', '应急助手', '离线指引与 SOS')
+          this.quickService('🎫', '门票预约', '分时库存与动态价格', this.onTicketTap)
+          this.quickService('⏱', '智慧排队', '等待变化联动行程', this.onQueueTap)
+          this.quickService('🏨', '餐住预订', '住玩与餐玩组合', this.onHospitalityTap)
+          this.quickService('🆘', '应急助手', '离线指引与 SOS', this.onEmergencyTap)
         }
         .width('100%')
         .height(236)

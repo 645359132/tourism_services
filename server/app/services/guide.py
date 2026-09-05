@@ -37,6 +37,14 @@ def _error(status_code: int, code: str, message: str) -> AppError:
     return AppError(status_code=status_code, code=code, message=message)
 
 
+def _utc_aware(value: datetime) -> datetime:
+    """把数据库时间恢复成明确 UTC; SQLite 会丢弃 DateTime 的 tzinfo。"""
+
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 async def latest_crowd_by_attraction(
     session: AsyncSession,
 ) -> tuple[int, dict[UUID, CrowdSnapshot]]:
@@ -52,7 +60,9 @@ async def latest_crowd_by_attraction(
 def _crowd_item(snapshot: CrowdSnapshot) -> CrowdItemResponse:
     return CrowdItemResponse(
         attraction_id=str(snapshot.attraction_id),
-        captured_at=snapshot.observed_at,
+        # API 返回的是绝对时刻。显式补回 UTC 后, 轻量 SQLite 与 PostgreSQL
+        # 都会序列化出相同的 Z/+00:00, 客户端不会把 07:00 误当景区本地时间。
+        captured_at=_utc_aware(snapshot.observed_at),
         people_count=snapshot.people_count,
         occupancy_bps=snapshot.occupancy_bps,
         level=snapshot.crowd_level,
@@ -150,7 +160,9 @@ async def list_narrations(
             transcript=narration.transcript,
             audio_url=narration.audio_url or "",
             duration_seconds=narration.duration_seconds,
-            provider_mode="text_demo",
+            # Provider 模式属于数据契约, 不能在响应层写死; 后续接入合法音频源时,
+            # 客户端可据此区分文字回退、打包音频或在线媒体, 而无需改接口形状。
+            provider_mode=narration.provider_mode,
             is_demo=True,
         )
         for narration in narrations

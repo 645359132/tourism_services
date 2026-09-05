@@ -6,7 +6,7 @@ import { AuthStore } from '../stores/AuthStore';
 import { GuidePage } from './GuidePage';
 import { HomePage } from './HomePage';
 import { MallPage } from './MallPage';
-import { ProfilePage } from './ProfilePage';
+import { ProfilePage, ProfileSection } from './ProfilePage';
 import { TripPage } from './TripPage';
 import { TicketPage } from './TicketPage';
 import { BookingPage } from './BookingPage';
@@ -26,6 +26,8 @@ struct Index {
   @State showTicketing: boolean = false;
   @State showBooking: boolean = false;
   @State bookingInitialSection: number = 0;
+  // 主页直达与“我的”页签共用同一状态，避免组件重建时丢失应急入口意图。
+  @State profileSection: ProfileSection = ProfileSection.OVERVIEW;
   @State largeText: boolean = false;
   @State highContrast: boolean = false;
 
@@ -105,6 +107,7 @@ struct Index {
       ProfilePage({
         loggedIn: $loggedIn,
         displayName: $displayName,
+        section: $profileSection,
         onLoginTap: (): void => {
           this.showLogin = true;
         },
@@ -126,6 +129,16 @@ struct Index {
         onHospitalityTap: (): void => {
           this.bookingInitialSection = 1;
           this.showBooking = true;
+        },
+        onTripTap: (): void => {
+          this.selected = MainDestination.TRIP;
+        },
+        onGuideTap: (): void => {
+          this.selected = MainDestination.GUIDE;
+        },
+        onEmergencyTap: (): void => {
+          this.profileSection = ProfileSection.OFFLINE;
+          this.selected = MainDestination.PROFILE;
         }
       })
     }

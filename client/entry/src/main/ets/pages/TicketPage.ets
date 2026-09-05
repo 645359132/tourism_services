@@ -3,6 +3,9 @@ import { ContentState } from '../models/AppModels';
 import {
   ElectronicTicket,
   ElectronicTicketStatus,
+  FaceDemoResult,
+  FaceDemoSample,
+  FaceDemoVerifyResponse,
   TicketOrder,
   TicketOrderListResponse,
   TicketOrderStatus,
@@ -25,11 +28,15 @@ import {
   TicketOrderAction,
   TicketRuleResult,
   canApplyTicketAction,
+  canRefundTicketOrder,
   detectInventoryChange,
   formatMoney,
+  hasRequiredIssuedTickets,
+  ticketOrderRenderKey,
   validateTicketQuantity,
   validateVisitDate
 } from '../utils/TicketRules';
+import { formatScenicClock, formatShanghaiDateTime } from '../utils/DateTimeRules';
 
 enum TicketPageTab {
   BOOKING = 0,
@@ -62,9 +69,13 @@ export struct TicketPage {
   @State qrData: string = '';
   @State qrTicketCode: string = '';
   @State qrExpiresAt: string = '';
+  @State faceTicketId: string = '';
+  @State faceSample: FaceDemoSample = FaceDemoSample.OWNER;
+  @State faceMessage: string = '';
   private service: TicketService = new TicketService();
   private createPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private payPending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  private cancelPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private refundPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private reschedulePending: PendingIdempotentOperation = new PendingIdempotentOperation();
 
@@ -235,6 +246,7 @@ export struct TicketPage {
       return;
     }
     this.orders = result.data.items;
+    this.reconcileExpandedOrderActions();
     TravelPersistenceStore.getInstance().saveTicketOrders(AuthStore.getInstance().getUserId(), this.orders);
     this.contentState = this.orders.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
   }
@@ -247,25 +259,93 @@ export struct TicketPage {
       }
     }
     this.orders = updated;
+    this.reconcileExpandedOrderActions();
     TravelPersistenceStore.getInstance().saveTicketOrders(AuthStore.getInstance().getUserId(), this.orders);
   }
 
-  private async pay(order: TicketOrder): Promise<void> {
-    this.operationBusy = true;
-    const payKey: string = this.payPending.getOrCreate(order.id, 'ticket-pay');
-    const result: NetworkResult<TicketOrder> = await this.service.payOrder(order.id, payKey);
-    this.operationBusy = false;
-    if (result.successful && result.data !== null) {
-      this.payPending.resolveSuccess();
-      this.replaceOrder(result.data);
-      this.operationMessage = `订单 ${result.data.order_no} 演示支付成功`;
-    } else {
-      this.resolvePendingFailure(this.payPending, result.error);
-      this.operationMessage = this.errorText(result.error);
+  private reconcileExpandedOrderActions(): void {
+    if (this.refundOrderId.length > 0) {
+      let refundStillAllowed: boolean = false;
+      for (let index: number = 0; index < this.orders.length; index++) {
+        if (this.orders[index].id === this.refundOrderId && canRefundTicketOrder(this.orders[index])) {
+          refundStillAllowed = true;
+          break;
+        }
+      }
+      if (!refundStillAllowed) {
+        this.refundOrderId = '';
+        this.refundReason = '';
+      }
+    }
+    if (this.faceTicketId.length > 0) {
+      let faceStillAllowed: boolean = false;
+      for (let orderIndex: number = 0; orderIndex < this.orders.length; orderIndex++) {
+        const order: TicketOrder = this.orders[orderIndex];
+        if (order.status !== TicketOrderStatus.PAID) {
+          continue;
+        }
+        for (let ticketIndex: number = 0; ticketIndex < order.tickets.length; ticketIndex++) {
+          if (order.tickets[ticketIndex].id === this.faceTicketId &&
+            order.tickets[ticketIndex].status === ElectronicTicketStatus.ISSUED) {
+            faceStillAllowed = true;
+          }
+        }
+      }
+      if (!faceStillAllowed) {
+        this.faceTicketId = '';
+        this.faceMessage = '';
+      }
     }
   }
 
+  private async pay(order: TicketOrder): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    this.operationBusy = true;
+    const payKey: string = this.payPending.getOrCreate(order.id, 'ticket-pay');
+    const result: NetworkResult<TicketOrder> = await this.service.payOrder(order.id, payKey);
+    if (result.successful && result.data !== null) {
+      this.payPending.resolveSuccess();
+      this.replaceOrder(result.data);
+      await this.loadOrders();
+      this.operationMessage = `订单 ${result.data.order_no} 演示支付成功`;
+    } else {
+      this.resolvePendingFailure(this.payPending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadOrders();
+      }
+      this.operationMessage = this.errorText(result.error);
+    }
+    this.operationBusy = false;
+  }
+
+  private async cancel(order: TicketOrder): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    this.operationBusy = true;
+    const cancelKey: string = this.cancelPending.getOrCreate(order.id, 'ticket-cancel');
+    const result: NetworkResult<TicketOrder> = await this.service.cancelOrder(order.id, cancelKey);
+    if (result.successful && result.data !== null) {
+      this.cancelPending.resolveSuccess();
+      this.replaceOrder(result.data);
+      await this.loadOrders();
+      this.operationMessage = `订单 ${result.data.order_no} 已取消，余票已释放`;
+    } else {
+      this.resolvePendingFailure(this.cancelPending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadOrders();
+      }
+      this.operationMessage = this.errorText(result.error);
+    }
+    this.operationBusy = false;
+  }
+
   private async refund(order: TicketOrder): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
     if (this.refundReason.trim().length < 3) {
       this.operationMessage = '请填写至少 3 个字符的退款原因';
       return;
@@ -275,19 +355,26 @@ export struct TicketPage {
     const refundOperationId: string = `${order.id}:${reason}`;
     const refundKey: string = this.refundPending.getOrCreate(refundOperationId, 'ticket-refund');
     const result: NetworkResult<TicketOrder> = await this.service.refundOrder(order.id, reason, refundKey);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.refundPending.resolveSuccess();
       this.replaceOrder(result.data);
       this.refundOrderId = '';
+      await this.loadOrders();
       this.operationMessage = `订单 ${result.data.order_no} 已退款`;
     } else {
       this.resolvePendingFailure(this.refundPending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadOrders();
+      }
       this.operationMessage = this.errorText(result.error);
     }
+    this.operationBusy = false;
   }
 
   private async reschedule(order: TicketOrder): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
     const target: TicketSlot | null = this.selectedSlot();
     if (target === null || target.id === order.slot_id) {
       this.operationMessage = '请先在购票页选择另一个有库存的目标时段';
@@ -297,15 +384,19 @@ export struct TicketPage {
     const rescheduleOperationId: string = `${order.id}:${target.id}`;
     const rescheduleKey: string = this.reschedulePending.getOrCreate(rescheduleOperationId, 'ticket-reschedule');
     const result: NetworkResult<TicketOrder> = await this.service.rescheduleOrder(order.id, target.id, rescheduleKey);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.reschedulePending.resolveSuccess();
       this.replaceOrder(result.data);
-      this.operationMessage = `订单 ${result.data.order_no} 已改签到 ${result.data.start_time}`;
+      await this.loadOrders();
+      this.operationMessage = `订单 ${result.data.order_no} 已改签到 ${formatScenicClock(result.data.start_time)}`;
     } else {
       this.resolvePendingFailure(this.reschedulePending, result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadOrders();
+      }
       this.operationMessage = this.errorText(result.error);
     }
+    this.operationBusy = false;
   }
 
   private async showQr(ticket: ElectronicTicket): Promise<void> {
@@ -319,6 +410,23 @@ export struct TicketPage {
       TravelPersistenceStore.getInstance().saveTicketIdentity(AuthStore.getInstance().getUserId(), result.data);
     } else {
       this.operationMessage = this.errorText(result.error);
+    }
+  }
+
+  private async verifyFaceDemo(ticket: ElectronicTicket): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
+    this.operationBusy = true;
+    const result: NetworkResult<FaceDemoVerifyResponse> = await this.service.verifyFaceDemo(
+      ticket.id, this.faceSample, true);
+    this.operationBusy = false;
+    if (result.successful && result.data !== null) {
+      const resultText: string = result.data.result === FaceDemoResult.MATCHED ?
+        '演示结果：身份样本匹配' : '演示结果：身份样本不匹配';
+      this.faceMessage = `${resultText}。${result.data.disclaimer}`;
+    } else {
+      this.faceMessage = this.errorText(result.error);
     }
   }
 
@@ -372,7 +480,7 @@ export struct TicketPage {
   private slotCard(slot: TicketSlot) {
     Column({ space: 7 }) {
       Row() {
-        Text(`${slot.start_time} - ${slot.end_time}`)
+        Text(`${formatScenicClock(slot.start_time)} - ${formatScenicClock(slot.end_time)}`)
           .fontSize(16)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
@@ -458,6 +566,11 @@ export struct TicketPage {
             })
         }
         .width('100%')
+
+        Text('演示退票规则：仅已支付且未核验的门票可退，具体截止时间由服务端配置并显示在订单卡片。')
+          .width('100%')
+          .fontSize(11)
+          .fontColor($r('app.color.text_secondary'))
 
         if (this.inventoryNotice.length > 0) {
           Text(this.inventoryNotice)
@@ -546,7 +659,7 @@ export struct TicketPage {
                 .width('100%')
                 .fontSize(12)
                 .fontColor($r('app.color.warning'))
-              Text(`报价有效至 ${this.quote.expires_at}`)
+              Text(`报价有效至 ${formatShanghaiDateTime(this.quote.expires_at)}`)
                 .width('100%')
                 .fontSize(11)
                 .fontColor($r('app.color.text_secondary'))
@@ -609,7 +722,8 @@ export struct TicketPage {
             order.status === TicketOrderStatus.PENDING_PAYMENT ? $r('app.color.warning') : $r('app.color.text_secondary'))
       }
       .width('100%')
-      Text(`${order.visit_date}  ${order.start_time}-${order.end_time}  ·  ${order.quantity} 张`)
+      Text(`${order.visit_date}  ${formatScenicClock(order.start_time)}-${formatScenicClock(order.end_time)}  ·  ` +
+        `${order.quantity} 张`)
         .width('100%')
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
@@ -627,41 +741,98 @@ export struct TicketPage {
 
       if (order.status === TicketOrderStatus.PAID) {
         ForEach(order.tickets, (ticket: ElectronicTicket) => {
-          Row() {
-            Text(`电子票 ${ticket.ticket_code}`)
-              .fontSize(12)
-              .fontColor($r('app.color.text_primary'))
-              .layoutWeight(1)
-            if (ticket.status === ElectronicTicketStatus.ISSUED) {
-              Button('查看 QRCode')
-                .fontSize(11)
-                .fontColor($r('app.color.primary'))
-                .backgroundColor($r('app.color.surface_tint'))
-                .onClick(() => {
-                  this.showQr(ticket);
-                })
-            } else {
-              Text(ticket.status === ElectronicTicketStatus.USED ? '已核验' : '已失效')
-                .fontSize(11)
-                .fontColor($r('app.color.text_secondary'))
+          Column({ space: 7 }) {
+            Row({ space: 6 }) {
+              Text(`电子票 ${ticket.ticket_code}`)
+                .fontSize(12)
+                .fontColor($r('app.color.text_primary'))
+                .maxLines(1)
+                .layoutWeight(1)
+              if (ticket.status === ElectronicTicketStatus.ISSUED) {
+                Button('二维码')
+                  .fontSize(10)
+                  .fontColor($r('app.color.primary'))
+                  .backgroundColor($r('app.color.surface_tint'))
+                  .onClick(() => {
+                    this.showQr(ticket);
+                  })
+                Button('人脸演示')
+                  .fontSize(10)
+                  .fontColor($r('app.color.primary'))
+                  .backgroundColor($r('app.color.surface_tint'))
+                  .onClick(() => {
+                    this.faceTicketId = ticket.id;
+                    this.faceSample = FaceDemoSample.OWNER;
+                    this.faceMessage = '请选择演示样本后执行核验';
+                  })
+              } else {
+                Text(ticket.status === ElectronicTicketStatus.USED ? '已核验' : '已失效')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+            }
+            .width('100%')
+            if (this.faceTicketId === ticket.id) {
+              Column({ space: 7 }) {
+                Text('人脸核验接口演示：不调用摄像头，不上传照片或特征，不会放行或核销门票。')
+                  .width('100%').fontSize(10).fontColor($r('app.color.warning'))
+                Row({ space: 6 }) {
+                  Button('模拟本人')
+                    .fontSize(10)
+                    .fontColor(this.faceSample === FaceDemoSample.OWNER ? Color.White : $r('app.color.primary'))
+                    .backgroundColor(this.faceSample === FaceDemoSample.OWNER ? $r('app.color.primary') :
+                      $r('app.color.surface'))
+                    .onClick(() => { this.faceSample = FaceDemoSample.OWNER; })
+                  Button('模拟他人')
+                    .fontSize(10)
+                    .fontColor(this.faceSample === FaceDemoSample.OTHER ? Color.White : $r('app.color.primary'))
+                    .backgroundColor(this.faceSample === FaceDemoSample.OTHER ? $r('app.color.primary') :
+                      $r('app.color.surface'))
+                    .onClick(() => { this.faceSample = FaceDemoSample.OTHER; })
+                  Button(this.operationBusy ? '核验中…' : '执行核验')
+                    .enabled(!this.operationBusy)
+                    .fontSize(10).fontColor(Color.White).backgroundColor($r('app.color.primary'))
+                    .onClick(() => { this.verifyFaceDemo(ticket); })
+                }
+                .width('100%')
+                Text(this.faceMessage).width('100%').fontSize(10).fontColor($r('app.color.text_secondary'))
+              }
+              .width('100%').padding(10).borderRadius(10).backgroundColor($r('app.color.page_background'))
             }
           }
           .width('100%')
         }, (ticket: ElectronicTicket) => ticket.id)
+        if (typeof order.refund_deadline_at === 'string' && order.refund_deadline_at.length > 0) {
+          Text(`退票截止 ${formatShanghaiDateTime(order.refund_deadline_at)} · 需提前 ` +
+            `${order.refund_cutoff_hours} 小时 · ${order.refundable ? '当前可申请' : '当前不可申请'}`)
+            .width('100%')
+            .fontSize(10)
+            .fontColor(order.refundable ? $r('app.color.success') : $r('app.color.warning'))
+        }
       }
 
       Row({ space: 8 }) {
         if (canApplyTicketAction(order.status, TicketOrderAction.PAY)) {
-          Button('演示支付').fontSize(12).fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => {
-            this.pay(order);
-          })
+          Button('演示支付').enabled(!this.operationBusy).fontSize(12).fontColor(Color.White)
+            .backgroundColor($r('app.color.primary')).onClick(() => {
+              this.pay(order);
+            })
         }
-        if (canApplyTicketAction(order.status, TicketOrderAction.REFUND)) {
-          Button('申请退款').fontSize(12).fontColor($r('app.color.error')).backgroundColor($r('app.color.surface_tint'))
+        if (canApplyTicketAction(order.status, TicketOrderAction.CANCEL)) {
+          Button('取消订单').enabled(!this.operationBusy).fontSize(12).fontColor($r('app.color.error'))
+            .backgroundColor($r('app.color.surface_tint')).onClick(() => {
+              this.cancel(order);
+            })
+        }
+        if (canRefundTicketOrder(order)) {
+          Button('申请退款').enabled(!this.operationBusy).fontSize(12).fontColor($r('app.color.error'))
+            .backgroundColor($r('app.color.surface_tint'))
             .onClick(() => {
               this.refundOrderId = order.id;
             })
-          Button('改签到已选时段').fontSize(12).fontColor($r('app.color.primary'))
+        }
+        if (hasRequiredIssuedTickets(order)) {
+          Button('改签到已选时段').enabled(!this.operationBusy).fontSize(12).fontColor($r('app.color.primary'))
             .backgroundColor($r('app.color.surface_tint')).onClick(() => {
               this.reschedule(order);
             })
@@ -669,7 +840,7 @@ export struct TicketPage {
       }
       .width('100%')
 
-      if (this.refundOrderId === order.id) {
+      if (this.refundOrderId === order.id && canRefundTicketOrder(order)) {
         Row({ space: 8 }) {
           TextInput({ text: this.refundReason, placeholder: '请输入退款原因' })
             .layoutWeight(1)
@@ -679,6 +850,7 @@ export struct TicketPage {
               this.refundReason = value;
             })
           Button('确认退款')
+            .enabled(!this.operationBusy)
             .fontSize(12)
             .fontColor(Color.White)
             .backgroundColor($r('app.color.error'))
@@ -728,9 +900,13 @@ export struct TicketPage {
               })
           }
           .width('100%')
+          Text('待支付订单可主动取消并立即释放余票；退票截止与当前资格以订单卡片中的服务端规则为准。')
+            .width('100%')
+            .fontSize(11)
+            .fontColor($r('app.color.text_secondary'))
           ForEach(this.orders, (order: TicketOrder) => {
             this.orderCard(order)
-          }, (order: TicketOrder) => order.id)
+          }, (order: TicketOrder) => ticketOrderRenderKey(order))
         }
         if (this.operationMessage.length > 0) {
           Text(this.operationMessage)
@@ -810,7 +986,7 @@ export struct TicketPage {
           Text(this.qrTicketCode)
             .fontSize(15)
             .fontColor($r('app.color.text_primary'))
-          Text(`有效至 ${this.qrExpiresAt} · 演示票码`)
+          Text(`有效至 ${formatShanghaiDateTime(this.qrExpiresAt)} · 演示票码`)
             .fontSize(11)
             .fontColor($r('app.color.text_secondary'))
           Button('关闭')

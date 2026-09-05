@@ -17,7 +17,7 @@
 | 空库迁移 | 对同一新库执行两次 `uv run alembic upgrade head` | 首次到 head，第二次无新增迁移 | 通过 |
 | 应用种子 | 对同一库执行两次 `uv run tourism-seed` | 首次 applied，第二次 already applied | 通过 |
 | Python lint | `uv run ruff check .` | 0 错误 | 通过 |
-| 服务端测试/覆盖率 | `uv run pytest`；配置内置 branch coverage 和 `fail_under=70` | 146 passed，覆盖率 72.63%，含注册安全与 PostgreSQL 离线 DDL 门禁 | 通过 |
+| 服务端测试/覆盖率 | `uv run pytest`；配置内置 branch coverage 和 `fail_under=70` | 154 passed，覆盖率 73.00%，含注册安全、过期预约清理、门票取消、人脸演示边界与 PostgreSQL 离线 DDL 门禁 | 通过 |
 | 真实网络 smoke | 独立服务 + `uv run tourism-smoke` | 当前 runner 49/49，含注册 3 项与 3 条 WebSocket 契约 | 通过 |
 | Locust 本机基线 | SHA-256 校验的 CSV 证据 | 320 请求、0 失败、11.42 req/s、aggregate p95 160 ms | 通过（仅本机基线） |
 | Compose 静态边界 | `docker compose config --quiet` | 退出码 0 | 通过 |
@@ -25,7 +25,7 @@
 | Compose Locust | 独立的 SHA-256 校验 CSV | 5 users / 30 s；319 请求、0 失败、11.33 req/s、aggregate p95 130 ms | 通过（仅本机基线） |
 | OHPM 依赖与 lock | `ohpm install` 并检查 `client/oh-package-lock.json5` | 安装退出码 0；仅公开 `@ohos/hypium@1.0.25` 地址、版本和 integrity，无本机路径 | 通过 |
 | DevEco Code Linter | 本文给出的两个位置参数命令 | `No defects found`，Errors/Warns/Suggestions 均为 0 | 通过（支持的规则集） |
-| Hypium 本地测试 | `entry@default` Hvigor test | 45 passed，Failure 0，Error 0 | 通过 |
+| Hypium 本地测试 | `entry@default` Hvigor test | 47 passed，Failure 0，Error 0 | 通过 |
 | on-device 测试包 | `entry@ohosTest` debug HAP | 4 个用例编译成功 | 通过（仅编译） |
 | 客户端应用包 | `entry@default` debug HAP | 编译成功，CLI 产物未签名 | 通过（仅编译） |
 | 模拟器/真机矩阵 | 在 DevEco Studio 运行 `entry@ohosTest` 与人工流程 | 执行结果由测试人员按本文矩阵记录 | 待人工复验 |
@@ -77,7 +77,7 @@ uv run pytest
 - `alembic current` 应指向 head；第二次 upgrade 不创建另一套 schema。
 - 两次 seed 后业务目录、库存、演示账号与离线 manifest 不重复；第二次输出
   `Application seed already applied.`。
-- canonical `uv run pytest` 已通过 146 个测试，分支覆盖率 72.63%；`server/pyproject.toml` 自动追加
+- canonical `uv run pytest` 已通过 154 个测试，分支覆盖率 73.00%；`server/pyproject.toml` 自动追加
   strict config/markers、隔离 basetemp、`--cov=app` 和 missing-lines 报告，并对 branch
   coverage 施加 70% 下限。不要用省略 coverage addopts 的局部命令代替最终门禁。
 
@@ -338,7 +338,7 @@ Code Linter 命令最后有两个必需位置参数，顺序必须精确为：
 配置中受支持规则、ArkTS 编译和设备矩阵边界，不声明该扩展完整覆盖。
 
 `ohpm install` 已成功完成，仓库 lock 只解析公开的 `@ohos/hypium@1.0.25`，不含
-`file:` 或本机路径。Hypium `entry@default` 已执行 45 个用例，Failure 0、Error 0；
+`file:` 或本机路径。Hypium `entry@default` 已执行 47 个用例，Failure 0、Error 0；
 包含 4 个用例的 `entry@ohosTest` 与 `entry@default` debug HAP 均已成功编译。
 
 ## 6. DevEco 模拟器、签名与 phone/tablet 人工矩阵

@@ -26,6 +26,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
       TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1,api,testserver}
       ENABLE_DEMO_ACCOUNTS: ${ENABLE_DEMO_ACCOUNTS:-false}
+      TICKET_REFUND_CUTOFF_HOURS: ${TICKET_REFUND_CUTOFF_HOURS:-2}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

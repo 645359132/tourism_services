@@ -38,6 +38,7 @@ import {
   validateSessionReservation
 } from '../../utils/BookingRules';
 import { PendingIdempotentOperation, formatMoney } from '../../utils/TicketRules';
+import { formatShanghaiDateTime, formatShanghaiRange } from '../../utils/DateTimeRules';
 
 @Component
 export struct ExperienceBookingView {
@@ -530,7 +531,8 @@ export struct ExperienceBookingView {
         Text(reservationStatusLabel(value.status)).fontSize(11).fontColor(value.status === ReservationStatus.CONFIRMED ?
           $r('app.color.success') : $r('app.color.warning'))
       }.width('100%')
-      Text(`${value.starts_at} · ${value.party_size} 人 · provider=${value.provider} · demo=${value.is_demo}`)
+      Text(`${formatShanghaiDateTime(value.starts_at)} · ${value.party_size} 人 · ` +
+        `provider=${value.provider} · demo=${value.is_demo}`)
         .fontSize(10).fontColor($r('app.color.text_secondary'))
       if (value.status === ReservationStatus.HELD) {
         Row({ space: 8 }) {
@@ -590,7 +592,7 @@ export struct ExperienceBookingView {
           ForEach(this.sessions, (session: ExperienceSession) => {
             Row() {
               Column({ space: 3 }) {
-                Text(`${session.starts_at} - ${session.ends_at}`).fontWeight(FontWeight.Medium)
+                Text(formatShanghaiRange(session.starts_at, session.ends_at)).fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary'))
                 Text(`${session.status} · 余量 ${session.remaining}/${session.capacity}`).fontSize(11)
                   .fontColor(session.status === SessionStatus.OPEN ? $r('app.color.success') : $r('app.color.warning'))

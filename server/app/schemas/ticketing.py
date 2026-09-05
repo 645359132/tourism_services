@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -70,6 +71,12 @@ class PayOrderRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
+class CancelOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
 class RefundOrderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,6 +110,9 @@ class TicketOrderResponse(BaseModel):
     unit_price_cents: int
     total_cents: int
     expires_at: datetime
+    refund_cutoff_hours: int
+    refund_deadline_at: datetime | None
+    refundable: bool
     tickets: list[TicketSummary]
 
 
@@ -134,3 +144,22 @@ class GateValidationResponse(BaseModel):
     validated_at: datetime
     gate_code: str
     is_demo: bool = True
+
+
+class FaceDemoVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sample: Literal["OWNER", "OTHER"]
+    # Literal[True] 让“明确同意”成为接口校验的一部分, false 或漏传都会在进入业务层前失败。
+    consent: Literal[True]
+
+
+class FaceDemoVerifyResponse(BaseModel):
+    ticket_id: str
+    ticket_code: str
+    result: Literal["DEMO_MATCHED", "DEMO_NOT_MATCHED"]
+    provider: str = "demo_face_gate"
+    is_demo: bool = True
+    biometric_processed: bool = False
+    admission_granted: bool = False
+    disclaimer: str

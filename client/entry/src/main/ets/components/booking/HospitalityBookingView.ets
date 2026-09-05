@@ -22,6 +22,7 @@ import { BookingService } from '../../network/services/BookingService';
 import {
   BookingRuleResult,
   hasActiveStayConflict,
+  isCurrentAvailableTimedBucket,
   reservationRenderKey,
   reservationStatusLabel,
   shanghaiDateAfterDays,
@@ -31,6 +32,7 @@ import {
   validateTimedBooking
 } from '../../utils/BookingRules';
 import { PendingIdempotentOperation, formatMoney } from '../../utils/TicketRules';
+import { formatShanghaiDateTime, formatShanghaiRange } from '../../utils/DateTimeRules';
 
 @Component
 export struct HospitalityBookingView {
@@ -59,6 +61,7 @@ export struct HospitalityBookingView {
   private bookingPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private confirmPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private cancelPending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  private availabilityRequestVersion: number = 0;
 
   aboutToAppear(): void {
     this.loadCatalog();
@@ -114,6 +117,14 @@ export struct HospitalityBookingView {
       hasActiveStayConflict(this.reservations, this.dateFrom, this.dateTo);
   }
 
+  private clearAvailabilitySelection(): void {
+    // 版本递增会使飞行中的旧查询失效，避免切换产品/日期后迟到响应覆盖新状态。
+    this.availabilityRequestVersion++;
+    this.availability = [];
+    this.startsAt = '';
+    this.inventoryNotice = '';
+  }
+
   private async loadCatalog(): Promise<void> {
     this.contentState = ContentState.LOADING;
     const venueResult: NetworkResult<VenueListResponse> = await this.service.listVenues();
@@ -150,8 +161,7 @@ export struct HospitalityBookingView {
     this.selectedKind = value;
     const visible: HospitalityOffer[] = this.offers.filter((item: HospitalityOffer) => item.kind === value);
     this.selectedOfferId = visible.length > 0 ? visible[0].id : '';
-    this.availability = [];
-    this.inventoryNotice = '';
+    this.clearAvailabilitySelection();
     this.contentState = visible.length > 0 ? ContentState.CONTENT : ContentState.EMPTY;
   }
 
@@ -170,10 +180,23 @@ export struct HospitalityBookingView {
       return;
     }
     this.operationBusy = true;
+    const requestVersion: number = ++this.availabilityRequestVersion;
+    const requestOfferId: string = offer.id;
+    const requestDateFrom: string = this.dateFrom;
+    const requestDateTo: string = this.dateTo;
     const previous: AvailabilityBucket[] = this.availability.slice();
+    // 新查询开始即撤销旧选择，网络失败或空结果时也不能继续提交旧产品/旧日期的时段。
+    this.availability = [];
+    this.startsAt = '';
+    this.inventoryNotice = '';
     const result: NetworkResult<AvailabilityResponse> = await this.service.getAvailability(
-      offer.id, this.dateFrom, this.dateTo);
+      requestOfferId, requestDateFrom, requestDateTo);
     this.operationBusy = false;
+    if (requestVersion !== this.availabilityRequestVersion || this.selectedOfferId !== requestOfferId ||
+      this.dateFrom !== requestDateFrom || this.dateTo !== requestDateTo) {
+      this.operationMessage = announce ? '查询条件已变化，请按当前条件重新查询库存' : this.operationMessage;
+      return;
+    }
     if (!result.successful || result.data === null) {
       if (announce) {
         this.contentState = this.stateForError(result.error);
@@ -186,8 +209,11 @@ export struct HospitalityBookingView {
       previous[0].remaining !== this.availability[0].remaining) {
       this.inventoryNotice = `库存已从 ${previous[0].remaining} 更新为 ${this.availability[0].remaining}`;
     }
-    if (this.availability.length > 0) {
-      this.startsAt = this.availability[0].start_at;
+    for (let index: number = 0; index < this.availability.length; index++) {
+      if (this.availability[index].remaining > 0) {
+        this.startsAt = this.availability[index].start_at;
+        break;
+      }
     }
     if (announce) {
       this.contentState = this.availability.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
@@ -238,6 +264,11 @@ export struct HospitalityBookingView {
     if (bookingKind === OfferKind.ROOM) {
       validation = validateStayBooking(bookingDateFrom, bookingDateTo, bookingQuantity, bookingPartySize);
     } else if (bookingKind === OfferKind.MEAL) {
+      if (!isCurrentAvailableTimedBucket(
+        this.availability, offer.id, bookingStartsAt, bookingDateFrom, bookingDateTo)) {
+        this.operationMessage = '请重新查询库存并选择当前餐饮产品的可用时段';
+        return;
+      }
       validation = validateTimedBooking(bookingStartsAt, bookingPartySize);
     } else {
       validation = validateTimedBooking(`${bookingDateFrom}T09:00`, bookingPartySize);
@@ -377,7 +408,10 @@ export struct HospitalityBookingView {
         .fontColor(this.selectedOfferId === value.id ? '#E8F2FF' : $r('app.color.text_secondary'))
     }.width('48%').height(146).padding(13).borderRadius(16)
       .backgroundColor(this.selectedOfferId === value.id ? $r('app.color.primary') : $r('app.color.surface'))
-      .onClick(() => { this.selectedOfferId = value.id; this.availability = []; })
+      .onClick(() => {
+        this.selectedOfferId = value.id;
+        this.clearAvailabilitySelection();
+      })
   }
 
   build() {
@@ -424,10 +458,16 @@ export struct HospitalityBookingView {
         Row({ space: 8 }) {
           TextInput({ text: this.dateFrom, placeholder: this.selectedKind === OfferKind.ROOM ? '入住日期' : '游玩日期' })
             .layoutWeight(1).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
-            .onChange((value: string) => { this.dateFrom = value; })
+            .onChange((value: string) => {
+              this.dateFrom = value;
+              this.clearAvailabilitySelection();
+            })
           TextInput({ text: this.dateTo, placeholder: '离店/查询结束日期' }).layoutWeight(1)
             .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
-            .onChange((value: string) => { this.dateTo = value; })
+            .onChange((value: string) => {
+              this.dateTo = value;
+              this.clearAvailabilitySelection();
+            })
           Button('查库存').fontColor(Color.White).backgroundColor($r('app.color.primary'))
             .onClick(() => { this.checkAvailability(); })
         }.width('100%')
@@ -449,11 +489,12 @@ export struct HospitalityBookingView {
         ForEach(this.availability, (bucket: AvailabilityBucket) => {
           Row() {
             Column({ space: 3 }) {
-              Text(`${bucket.start_at} - ${bucket.end_at}`).fontColor($r('app.color.text_primary'))
+              Text(formatShanghaiRange(bucket.start_at, bucket.end_at)).fontColor($r('app.color.text_primary'))
               Text(`余量 ${bucket.remaining} · ${formatMoney(bucket.unit_price_cents)}`).fontSize(11)
                 .fontColor(bucket.remaining > 0 ? $r('app.color.success') : $r('app.color.error'))
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Button('选此时段').fontSize(11).onClick(() => { this.startsAt = bucket.start_at; })
+            Button('选此时段').enabled(bucket.remaining > 0).fontSize(11)
+              .onClick(() => { this.startsAt = bucket.start_at; })
           }.width('100%').padding(12).borderRadius(13).backgroundColor($r('app.color.surface'))
         }, (bucket: AvailabilityBucket) => bucket.bucket_id)
 
@@ -466,9 +507,10 @@ export struct HospitalityBookingView {
           Button('+').onClick(() => { this.partySize = Math.min(12, this.partySize + 1); })
         }.width('100%')
         if (this.selectedKind === OfferKind.MEAL) {
-          TextInput({ text: this.startsAt, placeholder: '餐饮时段 ISO 时间' }).width('100%')
-            .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
-            .onChange((value: string) => { this.startsAt = value; })
+          Text(this.startsAt.length > 0 ? `已选餐饮时段：${formatShanghaiDateTime(this.startsAt)}` :
+            '请先查询库存并选择餐饮时段')
+            .width('100%').padding(10).fontSize(11).fontColor($r('app.color.text_secondary'))
+            .backgroundColor($r('app.color.surface')).borderRadius(10)
         }
         if (this.hasSelectedStayConflict()) {
           Text('检测到所选日期已有住宿预约；提交时会先刷新状态')
@@ -494,7 +536,7 @@ export struct HospitalityBookingView {
                     .fontColor(value.status === ReservationStatus.CONFIRMED ?
                       $r('app.color.success') : $r('app.color.warning'))
                 }.width('100%')
-                Text(`${value.starts_at} - ${value.ends_at} · ${formatMoney(value.total_cents)} · ` +
+                Text(`${formatShanghaiRange(value.starts_at, value.ends_at)} · ${formatMoney(value.total_cents)} · ` +
                   `provider=${value.provider}/demo=${value.is_demo}`).fontSize(10).fontColor($r('app.color.text_secondary'))
                 if (value.status === ReservationStatus.HELD) {
                   Row({ space: 8 }) {

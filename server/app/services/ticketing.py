@@ -18,6 +18,7 @@ from app.core.config import Settings
 from app.core.errors import AppError
 from app.core.security import create_ticket_qr, decode_token
 from app.db.models.ticketing import (
+    ORDER_CANCELLED,
     ORDER_EXPIRED,
     ORDER_PAID,
     ORDER_PENDING_PAYMENT,
@@ -37,8 +38,10 @@ from app.db.models.ticketing import (
     TicketValidation,
 )
 from app.db.models.user import User
+from app.providers.gate import DemoFaceGateProvider, FaceDemoSample, FaceGateProvider
 from app.providers.payment import DemoPaymentProvider
 from app.schemas.ticketing import (
+    FaceDemoVerifyResponse,
     GateValidationResponse,
     QuoteResponse,
     TicketOrderResponse,
@@ -50,6 +53,7 @@ from app.schemas.ticketing import (
 from app.services.reservations import (
     acquire_user_schedule_lock,
     check_marketplace_schedule_conflict,
+    expire_reservation_holds,
 )
 
 SCENIC_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -72,6 +76,12 @@ def _scenic_today() -> date:
     return datetime.now(SCENIC_TIMEZONE).date()
 
 
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _slot_start_utc(slot: TicketSlot) -> datetime:
     return datetime.combine(
         slot.visit_date,
@@ -89,6 +99,10 @@ def _slot_end_utc(slot: TicketSlot) -> datetime:
     if slot.end_time <= slot.start_time:
         end += timedelta(days=1)
     return end
+
+
+def _refund_deadline_utc(slot: TicketSlot, cutoff_hours: int) -> datetime:
+    return _slot_start_utc(slot) - timedelta(hours=cutoff_hours)
 
 
 def _order_statement():
@@ -133,12 +147,23 @@ async def _owned_order_by_identity(
     return order
 
 
-def order_response(order: TicketOrder) -> TicketOrderResponse:
+def order_response(
+    order: TicketOrder,
+    *,
+    refund_cutoff_hours: int,
+) -> TicketOrderResponse:
     if len(order.items) != 1:
         raise RuntimeError("MVP ticket orders must contain exactly one item")
     item = order.items[0]
     slot = item.slot
     tickets = sorted(order.tickets, key=lambda ticket: (ticket.issued_at, ticket.ticket_code))
+    refund_deadline = _refund_deadline_utc(slot, refund_cutoff_hours)
+    issued_count = sum(ticket.status == TICKET_ISSUED for ticket in tickets)
+    refundable = (
+        order.status == ORDER_PAID
+        and issued_count == item.quantity
+        and datetime.now(UTC) < refund_deadline
+    )
     return TicketOrderResponse(
         id=str(order.id),
         order_no=order.order_no,
@@ -151,7 +176,11 @@ def order_response(order: TicketOrder) -> TicketOrderResponse:
         quantity=item.quantity,
         unit_price_cents=item.unit_price_cents,
         total_cents=order.total_cents,
-        expires_at=order.expires_at,
+        # SQLite 会丢失 datetime 的 tzinfo; 统一在 API 边界补回 UTC, 避免客户端把 UTC 当成本地时间.
+        expires_at=_aware(order.expires_at),
+        refund_cutoff_hours=refund_cutoff_hours,
+        refund_deadline_at=refund_deadline,
+        refundable=refundable,
         tickets=[
             TicketSummary(
                 id=str(ticket.id),
@@ -378,6 +407,8 @@ async def create_ticket_order(
         raise _error(409, "SLOT_CLOSED", "Ticket slot is no longer available")
     unit_price, _ = await calculate_unit_price(session, slot)
     await acquire_user_schedule_lock(session, actor_id)
+    # 跨资源冲突判断和过期预约释放必须处于同一用户时程锁事务中。
+    await expire_reservation_holds(session, user_id=actor_id)
     existing = await session.scalar(
         select(TicketOrder).where(
             TicketOrder.user_id == actor_id,
@@ -598,6 +629,71 @@ async def pay_ticket_order(
     return loaded
 
 
+async def cancel_pending_ticket_order(
+    session: AsyncSession,
+    *,
+    order_id: UUID,
+    user: User,
+) -> TicketOrder:
+    """Cancel an unpaid order once and release exactly its reserved inventory."""
+
+    actor_id = user.id
+    actor_is_admin = _is_admin(user)
+    await expire_pending_orders(session, user_id=actor_id)
+    await session.commit()
+    order = await _owned_order(session, order_id=order_id, user=user)
+    # 取消按资源状态幂等: 重放同一订单直接返回终态, 绝不能重复扣减 reserved.
+    if order.status == ORDER_CANCELLED:
+        return order
+    if order.status != ORDER_PENDING_PAYMENT:
+        raise _error(409, "ORDER_NOT_CANCELLABLE", "Only pending orders can be cancelled")
+
+    item = order.items[0]
+    transitioned = await session.execute(
+        update(TicketOrder)
+        .execution_options(synchronize_session=False)
+        .where(
+            TicketOrder.id == order.id,
+            TicketOrder.status == ORDER_PENDING_PAYMENT,
+            TicketOrder.version == order.version,
+        )
+        .values(status=ORDER_CANCELLED, version=TicketOrder.version + 1)
+    )
+    if transitioned.rowcount != 1:
+        await session.rollback()
+        concurrent = await _owned_order_by_identity(
+            session,
+            order_id=order_id,
+            user_id=actor_id,
+            admin=actor_is_admin,
+        )
+        if concurrent.status == ORDER_CANCELLED:
+            return concurrent
+        raise _error(409, "ORDER_NOT_CANCELLABLE", "Order is not cancellable")
+
+    # 订单状态与库存台账位于同一事务: 任一条件更新失败都会整体回滚.
+    released = await session.execute(
+        update(TicketInventory)
+        .execution_options(synchronize_session=False)
+        .where(
+            TicketInventory.slot_id == item.slot_id,
+            TicketInventory.reserved >= item.quantity,
+        )
+        .values(
+            reserved=TicketInventory.reserved - item.quantity,
+            version=TicketInventory.version + 1,
+        )
+    )
+    if released.rowcount != 1:
+        await session.rollback()
+        raise _error(409, "INVENTORY_CONFLICT", "Reserved inventory is unavailable")
+
+    await session.commit()
+    loaded = await _load_order(session, order.id)
+    assert loaded is not None
+    return loaded
+
+
 async def refund_ticket_order(
     session: AsyncSession,
     *,
@@ -626,8 +722,11 @@ async def refund_ticket_order(
     if order.status != ORDER_PAID:
         raise _error(409, "ORDER_NOT_REFUNDABLE", "Only paid orders can be refunded")
     item = order.items[0]
-    slot_start = _slot_start_utc(item.slot)
-    if slot_start <= datetime.now(UTC) + timedelta(hours=settings.ticket_refund_cutoff_hours):
+    refund_deadline = _refund_deadline_utc(
+        item.slot,
+        settings.ticket_refund_cutoff_hours,
+    )
+    if datetime.now(UTC) >= refund_deadline:
         raise _error(
             409,
             "REFUND_WINDOW_CLOSED",
@@ -766,6 +865,7 @@ async def reschedule_ticket_order(
     if owned_before_lock.user_id != actor_id:
         raise _error(403, "FORBIDDEN", "Cross-owner rescheduling is not permitted")
     await acquire_user_schedule_lock(session, actor_id)
+    await expire_reservation_holds(session, user_id=actor_id)
     existing = await session.scalar(
         select(RescheduleRequest).where(
             RescheduleRequest.user_id == actor_id,
@@ -964,7 +1064,7 @@ async def create_ticket_qr_response(
         ticket_id=str(ticket.id),
         ticket_code=ticket.ticket_code,
         qr_data=qr_data,
-        expires_at=expires_at,
+        expires_at=_aware(expires_at),
         is_demo=True,
     )
 
@@ -978,7 +1078,8 @@ def _validation_response(
         ticket_id=str(ticket.id),
         ticket_code=ticket.ticket_code,
         result=validation.result,
-        validated_at=validation.validated_at,
+        # 闸机记录从 SQLite 读回时也可能成为 naive datetime, 响应必须保持明确 UTC.
+        validated_at=_aware(validation.validated_at),
         gate_code=validation.gate_code,
         is_demo=True,
     )
@@ -1093,3 +1194,56 @@ async def validate_ticket_at_gate(
     refreshed_ticket = await session.get(ElectronicTicket, ticket.id)
     assert refreshed_ticket is not None
     return _validation_response(validation, refreshed_ticket)
+
+
+async def verify_ticket_face_demo(
+    session: AsyncSession,
+    *,
+    ticket_id: UUID,
+    user: User,
+    sample: FaceDemoSample,
+    provider: FaceGateProvider | None = None,
+) -> FaceDemoVerifyResponse:
+    """演示可替换的人脸 Provider, 但不处理生物信息也不执行票据核销。"""
+
+    ticket = await session.scalar(
+        select(ElectronicTicket)
+        .options(joinedload(ElectronicTicket.order))
+        .where(ElectronicTicket.id == ticket_id)
+    )
+    # 所有权失败返回同一个 404, 防止游客通过接口枚举他人的电子票。
+    if ticket is None or ticket.user_id != user.id:
+        raise _error(404, "TICKET_NOT_FOUND", "Electronic ticket not found")
+    if ticket.order.status != ORDER_PAID or ticket.status != TICKET_ISSUED:
+        raise _error(
+            409,
+            "FACE_DEMO_TICKET_NOT_ELIGIBLE",
+            "Only a paid and issued ticket can use the face-gate demo",
+        )
+
+    verification = await (provider or DemoFaceGateProvider()).verify(
+        expected_subject_id=str(ticket.user_id),
+        sample=sample,
+    )
+    # face-demo 是展示 Provider seam 的只读端点。即使未来误注入真实适配器,
+    # 也必须拒绝任何生物处理或放行声明, 真实核销只能走管理员 gate 事务。
+    if (
+        not verification.is_demo
+        or verification.biometric_processed
+        or verification.admission_granted
+    ):
+        raise RuntimeError("Face demo provider violated the no-biometric safety boundary")
+
+    return FaceDemoVerifyResponse(
+        ticket_id=str(ticket.id),
+        ticket_code=ticket.ticket_code,
+        result=verification.result,
+        provider=verification.provider,
+        is_demo=True,
+        biometric_processed=False,
+        admission_granted=False,
+        disclaimer=(
+            "仅为无生物信息的人脸接入演示; 未调用摄像头或活体检测, "
+            "不会放行或核销门票。"
+        ),
+    )

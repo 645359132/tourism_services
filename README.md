@@ -9,8 +9,8 @@
 ## 功能概览
 
 - 游客自助注册并自动登录、JWT 登录、刷新令牌轮换与重放防护、Argon2id 密码散列，以及游客/商户/客服/管理员 RBAC。
-- 动态票价、分时库存、幂等下单、演示支付、短时电子票二维码、核验、退款和改签。
-- 景点与文化讲解、示意地图、模拟人流 WebSocket、偏好行程、冲突检查与动态重排。
+- 动态票价、分时库存、幂等下单、待支付订单取消、演示支付、短时电子票二维码、退款、改签，以及不采集生物信息的人脸核验接口演示。
+- 景点与文化讲解（含可替换 `audio_url` 接口字段）、示意地图、模拟人流 WebSocket、偏好行程、冲突检查与动态重排。
 - 项目/演出预约、虚拟排队、FastPass、酒店/民宿/餐饮和原子组合预约。
 - 商品、购物车、订单、活动、不可变积分流水、反馈回访、客服 WebSocket 和同行协作。
 - phone/tablet 响应式五栏导航、深浅色、大字/高对比、无障碍路线与便民设施。
@@ -281,6 +281,8 @@ ArkUI 页面通过类型化 Service 和统一 `HttpClient`/WebSocket 客户端�
 | 7 | 弱网离线与应急 | 校验旅行包、用户隔离缓存、安全 outbox、只读冷启动、疏散信息和不误导的 SOS 草稿 | [offline.py](server/app/services/offline.py)、[safety.py](server/app/services/safety.py)、[OfflineEmergencyView.ets](client/entry/src/main/ets/components/profile/OfflineEmergencyView.ets) |
 | 8 | 文化护照与绿色积分 | 幂等文化打卡、绿色凭证验证、统一不可变积分流水及商城余额联动 | [passport.py](server/app/services/passport.py)、[points.py](server/app/services/points.py)、[PassportGreenView.ets](client/entry/src/main/ets/components/profile/PassportGreenView.ets) |
 
+每项创新的用户入口、客户端状态保护、服务端不变量、演示边界和测试证据，见[八项创新实现详解](docs/innovations.md)。
+
 ## 外部能力与 Demo 边界
 
 MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运行实现；下列外部世界连接是有意保留的适配边界：
@@ -298,19 +300,19 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 ## 最终验收证据
 
-验收基线日期为 2026-09-04（Asia/Shanghai）：
+验收基线日期为 2026-09-05（Asia/Shanghai）：
 
 | 检查 | 已接受结果 |
 |---|---|
-| 服务端 pytest | 146 tests passed；分支覆盖率 72.63%，通过 `>= 70%` 门禁；包含游客注册与 PostgreSQL 离线 DDL 门禁 |
+| 服务端 pytest | 154 tests passed；分支覆盖率 73.00%，通过 `>= 70%` 门禁；包含游客注册、过期预约清理、门票取消、人脸演示边界与 PostgreSQL 离线 DDL 门禁 |
 | Ruff | `uv run ruff check .` 通过 |
-| HarmonyOS 本地业务测试 | Hvigor `test`：45 passed，Failure 0，Error 0 |
+| HarmonyOS 本地业务测试 | Hvigor `test`：47 passed，Failure 0，Error 0 |
 | 真实网络 smoke | 当前 runner 为 49/49，其中注册、注册会话和重复用户名占 3 项；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
 | Locust 本机基线 | 5 users / 30 s；CSV 320 requests、0 failures、11.42 req/s、aggregate p95 160 ms |
 | Locust Compose 基线 | PostgreSQL 16 + Redis 7 + 双 worker；CSV 319 requests、0 failures、11.33 req/s、aggregate p95 130 ms |
 | HarmonyOS 编译 | `entry@default` debug HAP 与含 4 个用例的 `entry@ohosTest` debug HAP 均构建成功 |
 | Code Linter | 仓库配置启用的 TypeScript/security recommended 规则执行且零缺陷 |
-| API 契约 | OpenAPI 共 105 个 REST operations；另有 3 条 WebSocket 契约 |
+| API 契约 | OpenAPI 共 107 个 REST operations；另有 3 条 WebSocket 契约 |
 | Compose | API/PostgreSQL/Redis 均 healthy；空库迁移至 `0007`、重复迁移/seed、schema drift、Redis PONG 均通过 |
 
 详细证据与复验范围：

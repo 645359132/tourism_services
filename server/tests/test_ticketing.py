@@ -160,6 +160,72 @@ def _pay_order(
     )
 
 
+def test_demo_refund_cutoff_defaults_to_two_hours(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    assert ticketing_harness.settings.ticket_refund_cutoff_hours == 2
+
+
+def test_order_response_exposes_runtime_refund_policy(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    token = _login(ticketing_harness.client, "tourist_two")["access_token"]
+
+    async def create_policy_slot() -> tuple[UUID, datetime]:
+        async with ticketing_harness.session_factory() as session:
+            adult_type = await session.scalar(
+                select(TicketType).where(TicketType.code == "adult")
+            )
+            assert adult_type is not None
+            visit_date = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=75)
+            slot = TicketSlot(
+                ticket_type_id=adult_type.id,
+                visit_date=visit_date,
+                start_time=time(10, 0),
+                end_time=time(11, 0),
+                is_active=True,
+            )
+            slot.inventory = TicketInventory(capacity=3, reserved=0, sold=0)
+            session.add(slot)
+            await session.commit()
+            start_at = datetime.combine(
+                visit_date,
+                time(10, 0),
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ).astimezone(ZoneInfo("UTC"))
+            return slot.id, start_at
+
+    slot_id, starts_at = asyncio.run(create_policy_slot())
+    original_cutoff = ticketing_harness.settings.ticket_refund_cutoff_hours
+    ticketing_harness.settings.ticket_refund_cutoff_hours = 6
+    try:
+        created = _create_order(
+            ticketing_harness,
+            token=token,
+            slot_id=slot_id,
+            quantity=1,
+            key="refund-policy-create-001",
+        )
+        paid = _pay_order(
+            ticketing_harness,
+            token=token,
+            order_id=created.json()["id"],
+            key="refund-policy-payment-001",
+        )
+    finally:
+        ticketing_harness.settings.ticket_refund_cutoff_hours = original_cutoff
+
+    assert created.status_code == 201
+    assert created.json()["refund_cutoff_hours"] == 6
+    assert created.json()["refundable"] is False
+    assert paid.status_code == 200
+    assert paid.json()["refund_cutoff_hours"] == 6
+    assert paid.json()["refundable"] is True
+    deadline = datetime.fromisoformat(paid.json()["refund_deadline_at"])
+    assert deadline == starts_at - timedelta(hours=6)
+    assert deadline.utcoffset() == timedelta(0)
+
+
 def test_dynamic_weekend_and_occupancy_pricing(ticketing_harness: TicketingHarness) -> None:
     async def select_weekend_slot() -> UUID:
         async with ticketing_harness.session_factory() as session:
@@ -168,7 +234,10 @@ def test_dynamic_weekend_and_occupancy_pricing(ticketing_harness: TicketingHarne
             slots = list(
                 await session.scalars(
                     select(TicketSlot)
-                    .where(TicketSlot.ticket_type_id == adult_type.id)
+                    .where(
+                        TicketSlot.ticket_type_id == adult_type.id,
+                        TicketSlot.id != ticketing_harness.gate_slot_id,
+                    )
                     .order_by(TicketSlot.visit_date, TicketSlot.start_time)
                 )
             )
@@ -357,6 +426,7 @@ def test_payment_qr_and_single_gate_validation(ticketing_harness: TicketingHarne
     assert qr.headers["Cache-Control"] == "no-store"
     assert qr.headers["Pragma"] == "no-cache"
     assert "tourist_demo" not in qr.json()["qr_data"]
+    assert datetime.fromisoformat(qr.json()["expires_at"]).utcoffset() == timedelta(0)
 
     tourist_forbidden = ticketing_harness.client.post(
         "/api/v1/ticketing/gate/validate",
@@ -399,7 +469,9 @@ def test_payment_qr_and_single_gate_validation(ticketing_harness: TicketingHarne
 
     assert accepted.status_code == 200
     assert accepted.json()["result"] == "ACCEPTED"
+    assert datetime.fromisoformat(accepted.json()["validated_at"]).utcoffset() == timedelta(0)
     assert replay.status_code == 200
+    assert datetime.fromisoformat(replay.json()["validated_at"]).utcoffset() == timedelta(0)
     assert replay.json()["validation_id"] == accepted.json()["validation_id"]
     assert second_scan.status_code == 409
 
@@ -460,6 +532,79 @@ def test_refund_voids_tickets_and_replenishes_sold_inventory(
             return inventory.sold
 
     assert asyncio.run(sold_count()) == 0
+
+
+def test_pending_order_can_be_cancelled_idempotently_and_releases_reserved_inventory(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    token = _login(ticketing_harness.client, "tourist_demo")["access_token"]
+
+    async def create_cancel_slot() -> tuple[UUID, str, UUID]:
+        async with ticketing_harness.session_factory() as session:
+            adult_type = await session.scalar(
+                select(TicketType).where(TicketType.code == "adult")
+            )
+            assert adult_type is not None
+            visit_date = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=60)
+            slot = TicketSlot(
+                ticket_type_id=adult_type.id,
+                visit_date=visit_date,
+                start_time=time(9, 0),
+                end_time=time(12, 0),
+                is_active=True,
+            )
+            slot.inventory = TicketInventory(capacity=5, reserved=0, sold=0)
+            session.add(slot)
+            await session.commit()
+            return slot.id, visit_date.isoformat(), adult_type.id
+
+    slot_id, visit_date, ticket_type_id = asyncio.run(create_cancel_slot())
+
+    def remaining() -> int:
+        response = ticketing_harness.client.get(
+            "/api/v1/ticketing/slots",
+            params={"visit_date": visit_date, "ticket_type_id": str(ticket_type_id)},
+        )
+        assert response.status_code == 200
+        slot = next(item for item in response.json()["items"] if item["id"] == str(slot_id))
+        return int(slot["remaining"])
+
+    assert remaining() == 5
+    created = _create_order(
+        ticketing_harness,
+        token=token,
+        slot_id=slot_id,
+        quantity=2,
+        key="cancel-create-001",
+    )
+    assert created.status_code == 201
+    assert created.json()["status"] == "PENDING_PAYMENT"
+    assert datetime.fromisoformat(created.json()["expires_at"]).utcoffset() == timedelta(0)
+    assert remaining() == 3
+
+    cancelled = ticketing_harness.client.post(
+        f"/api/v1/ticketing/orders/{created.json()['id']}/cancel",
+        headers=_bearer(token),
+        json={"idempotency_key": "cancel-request-001"},
+    )
+    replay = ticketing_harness.client.post(
+        f"/api/v1/ticketing/orders/{created.json()['id']}/cancel",
+        headers=_bearer(token),
+        json={"idempotency_key": "cancel-request-001"},
+    )
+    resource_replay = ticketing_harness.client.post(
+        f"/api/v1/ticketing/orders/{created.json()['id']}/cancel",
+        headers=_bearer(token),
+        json={"idempotency_key": "cancel-request-002"},
+    )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "CANCELLED"
+    assert replay.status_code == 200
+    assert replay.json()["id"] == cancelled.json()["id"]
+    assert resource_replay.status_code == 200
+    assert resource_replay.json()["id"] == cancelled.json()["id"]
+    assert remaining() == 5
 
 
 def test_failed_reschedule_rolls_back_target_and_source_ledgers(
@@ -1007,3 +1152,93 @@ def test_ticketing_seed_has_no_duplicate_catalog_rows(
     assert ticket_types == 4
     assert slots >= 85
     assert orders >= 1
+
+
+def test_face_demo_checks_consent_ownership_and_ticket_without_consuming_it(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    owner_token = _login(ticketing_harness.client, "tourist_demo")["access_token"]
+    other_token = _login(ticketing_harness.client, "tourist_two")["access_token"]
+    created = _create_order(
+        ticketing_harness,
+        token=owner_token,
+        slot_id=ticketing_harness.gate_slot_id,
+        quantity=1,
+        key="face-demo-create-001",
+    )
+    paid = _pay_order(
+        ticketing_harness,
+        token=owner_token,
+        order_id=created.json()["id"],
+        key="face-demo-payment-001",
+    )
+    assert paid.status_code == 200
+    ticket_id = paid.json()["tickets"][0]["id"]
+    endpoint = f"/api/v1/ticketing/tickets/{ticket_id}/face-demo/verify"
+
+    owner_match = ticketing_harness.client.post(
+        endpoint,
+        headers=_bearer(owner_token),
+        json={"sample": "OWNER", "consent": True},
+    )
+    other_sample = ticketing_harness.client.post(
+        endpoint,
+        headers=_bearer(owner_token),
+        json={"sample": "OTHER", "consent": True},
+    )
+    missing_consent = ticketing_harness.client.post(
+        endpoint,
+        headers=_bearer(owner_token),
+        json={"sample": "OWNER", "consent": False},
+    )
+    wrong_owner = ticketing_harness.client.post(
+        endpoint,
+        headers=_bearer(other_token),
+        json={"sample": "OWNER", "consent": True},
+    )
+
+    assert owner_match.status_code == 200
+    assert owner_match.headers["Cache-Control"] == "no-store"
+    assert owner_match.json() == {
+        "ticket_id": ticket_id,
+        "ticket_code": paid.json()["tickets"][0]["ticket_code"],
+        "result": "DEMO_MATCHED",
+        "provider": "demo_face_gate",
+        "is_demo": True,
+        "biometric_processed": False,
+        "admission_granted": False,
+        "disclaimer": (
+            "仅为无生物信息的人脸接入演示; 未调用摄像头或活体检测, "
+            "不会放行或核销门票。"
+        ),
+    }
+    assert other_sample.status_code == 200
+    assert other_sample.json()["result"] == "DEMO_NOT_MATCHED"
+    assert missing_consent.status_code == 422
+    assert wrong_owner.status_code == 404
+
+    # 两次演示匹配都是只读操作, 电子票必须保持 ISSUED 才能继续展示 QR 或办理退票。
+    refreshed = ticketing_harness.client.get(
+        f"/api/v1/ticketing/orders/{created.json()['id']}",
+        headers=_bearer(owner_token),
+    )
+    assert refreshed.status_code == 200
+    assert refreshed.json()["tickets"][0]["status"] == TICKET_ISSUED
+
+    async def void_ticket() -> None:
+        async with ticketing_harness.session_factory() as session:
+            await session.execute(
+                update(ElectronicTicket)
+                .where(ElectronicTicket.id == UUID(ticket_id))
+                .values(status="VOID")
+            )
+            await session.commit()
+
+    asyncio.run(void_ticket())
+    ineligible = ticketing_harness.client.post(
+        endpoint,
+        headers=_bearer(owner_token),
+        json={"sample": "OWNER", "consent": True},
+    )
+    assert ineligible.status_code == 409
+    assert ineligible.json()["error"]["code"] == "FACE_DEMO_TICKET_NOT_ELIGIBLE"

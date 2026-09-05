@@ -3,6 +3,7 @@ import { preferences } from '@kit.ArkData';
 import { Itinerary } from '../models/GuideModels';
 import { ShopOrder } from '../models/ShopModels';
 import { TicketOrder, TicketQrResponse } from '../models/TicketModels';
+import { normalizeCachedTicketOrders } from '../utils/TicketRules';
 import {
   CachedShopOrder,
   CachedTicketIdentity,
@@ -68,11 +69,7 @@ export class TravelPersistenceStore {
     if (payload.length === 0) {
       return [];
     }
-    try {
-      return JSON.parse(payload) as TicketOrder[];
-    } catch (error) {
-      return [];
-    }
+    return normalizeCachedTicketOrders(payload);
   }
 
   saveTicketIdentity(userId: string, value: TicketQrResponse): void {

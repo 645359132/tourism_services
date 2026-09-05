@@ -9,12 +9,13 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.config import Settings
 from app.core.errors import AppError
@@ -83,6 +84,18 @@ def _overlaps(
 ) -> bool:
     buffer = timedelta(minutes=buffer_minutes)
     return first_start < second_end + buffer and second_start < first_end + buffer
+
+
+def _active_reservation_condition(now: datetime) -> ColumnElement[bool]:
+    """Return the database predicate for reservations that still own a time slot."""
+
+    return or_(
+        Reservation.status == RESERVATION_CONFIRMED,
+        and_(
+            Reservation.status == RESERVATION_HELD,
+            Reservation.hold_expires_at > now,
+        ),
+    )
 
 
 def experience_response(experience: Experience) -> ExperienceResponse:
@@ -242,10 +255,13 @@ async def expire_reservation_holds(
             Reservation.status == RESERVATION_HELD,
             Reservation.hold_expires_at <= now,
         )
-        .limit(100)
     )
     if user_id is not None:
         statement = statement.where(Reservation.user_id == user_id)
+    else:
+        # 后台/列表触发的全局清理保持有界; 持有用户时程锁的写路径传入 user_id,
+        # 会完整清理该用户, 避免第 101 条过期占位仍干扰本次冲突判定。
+        statement = statement.limit(100)
     reservations = list(await session.scalars(statement))
     expired = 0
     for reservation in reservations:
@@ -285,13 +301,14 @@ async def check_marketplace_schedule_conflict(
 ) -> None:
     starts_at = _aware(starts_at)
     ends_at = _aware(ends_at)
+    now = datetime.now(UTC)
     reservations = list(
         await session.scalars(
             select(Reservation)
             .options(selectinload(Reservation.allocations))
             .where(
                 Reservation.user_id == user_id,
-                Reservation.status.in_(ACTIVE_RESERVATION_STATUSES),
+                _active_reservation_condition(now),
             )
         )
     )
@@ -434,13 +451,14 @@ async def _check_lodging_conflict(
     starts_at: datetime,
     ends_at: datetime,
 ) -> None:
+    now = datetime.now(UTC)
     reservations = list(
         await session.scalars(
             select(Reservation)
             .options(selectinload(Reservation.allocations))
             .where(
                 Reservation.user_id == user_id,
-                Reservation.status.in_(ACTIVE_RESERVATION_STATUSES),
+                _active_reservation_condition(now),
             )
         )
     )
@@ -578,9 +596,10 @@ async def create_reservation_from_allocations(
 
     # 创新点 4: 排队期间给出的体验或餐住建议只是候选方案; 真正落单时仍在用户级
     # 时程锁内复核跨资源冲突与共享库存, 避免旧建议把已被占用的空档当成可预约承诺。
-    await expire_reservation_holds(session)
-    await session.commit()
     await acquire_user_schedule_lock(session, actor_id)
+    # 清理和新预约写入共享同一个用户级事务锁。这样在等待锁期间刚过期的占位
+    # 也会被释放, 冲突检查与库存分配看到的是同一份有效状态。
+    await expire_reservation_holds(session, user_id=actor_id)
     existing = await session.scalar(
         select(Reservation).where(
             Reservation.user_id == actor_id,

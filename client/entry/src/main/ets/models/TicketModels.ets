@@ -12,6 +12,16 @@ export enum ElectronicTicketStatus {
   VOID = 'VOID'
 }
 
+export enum FaceDemoSample {
+  OWNER = 'OWNER',
+  OTHER = 'OTHER'
+}
+
+export enum FaceDemoResult {
+  MATCHED = 'DEMO_MATCHED',
+  NOT_MATCHED = 'DEMO_NOT_MATCHED'
+}
+
 export class TicketType {
   id: string = '';
   code: string = '';
@@ -70,6 +80,9 @@ export class TicketOrder {
   unit_price_cents: number = 0;
   total_cents: number = 0;
   expires_at: string = '';
+  refund_cutoff_hours: number = 0;
+  refund_deadline_at: string | null = null;
+  refundable: boolean = false;
   tickets: ElectronicTicket[] = [];
 }
 
@@ -83,4 +96,25 @@ export class TicketQrResponse {
   qr_data: string = '';
   expires_at: string = '';
   is_demo: boolean = true;
+}
+
+export class FaceDemoVerifyRequest {
+  sample: FaceDemoSample;
+  consent: boolean;
+
+  constructor(sample: FaceDemoSample, consent: boolean) {
+    this.sample = sample;
+    this.consent = consent;
+  }
+}
+
+export class FaceDemoVerifyResponse {
+  ticket_id: string = '';
+  ticket_code: string = '';
+  result: FaceDemoResult = FaceDemoResult.NOT_MATCHED;
+  provider: string = 'demo_face_gate';
+  is_demo: boolean = true;
+  biometric_processed: boolean = false;
+  admission_granted: boolean = false;
+  disclaimer: string = '';
 }

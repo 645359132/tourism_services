@@ -29,6 +29,14 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapability] = {
         is_demo=True,
         description="Demo gate workflow without physical turnstile integration",
     ),
+    "face_gate": ProviderCapability(
+        mode="demo_no_biometrics",
+        is_demo=True,
+        description=(
+            "Deterministic face-gate integration demo; no camera, biometric processing, "
+            "or admission control"
+        ),
+    ),
     "map": ProviderCapability(
         mode="schematic",
         is_demo=True,

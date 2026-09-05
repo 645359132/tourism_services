@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import { TripPlanItem } from '../main/ets/models/AppModels';
 import {
+  AvailabilityBucket,
   ExperienceSession,
   QueueStatus,
   Reservation,
@@ -16,7 +17,14 @@ import {
   ItineraryGenerateRequest,
   ItineraryItem
 } from '../main/ets/models/GuideModels';
-import { TicketOrderStatus, TicketQrResponse, TicketSlot } from '../main/ets/models/TicketModels';
+import {
+  ElectronicTicket,
+  ElectronicTicketStatus,
+  TicketOrder,
+  TicketOrderStatus,
+  TicketQrResponse,
+  TicketSlot
+} from '../main/ets/models/TicketModels';
 import { CartItem, PointsReward, ShopOrder, ShopOrderItem, ShopOrderStatus, ShopProduct } from '../main/ets/models/ShopModels';
 import { FeedbackKind, FacilityItem } from '../main/ets/models/ServiceModels';
 import { AppConfig } from '../main/ets/config/AppConfig';
@@ -64,6 +72,7 @@ import {
   detectSessionInventoryChange,
   hasActiveStayConflict,
   hasReservationConflict,
+  isCurrentAvailableTimedBucket,
   isCurrentItinerarySuggestion,
   isTerminalQueueStatus,
   parseQueueEvent,
@@ -98,7 +107,11 @@ import {
   TicketOrderAction,
   PendingIdempotentOperation,
   canApplyTicketAction,
+  canRefundTicketOrder,
   detectInventoryChange,
+  hasRequiredIssuedTickets,
+  normalizeCachedTicketOrders,
+  ticketOrderRenderKey,
   transitionTicketOrderStatus,
   validateTicketQuantity,
   validateVisitDate
@@ -155,6 +168,20 @@ export default function tourismBusinessRulesTest() {
         '{"error":{"code":"RESERVATION_NOT_CONFIRMABLE","message":"Reservation is not confirmable"}}', false);
       const unavailableInventory: ApiErrorInfo = mapApiError(409,
         '{"error":{"code":"INVENTORY_UNAVAILABLE","message":"Stay inventory is unavailable"}}', false);
+      const refundWindowClosed: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"REFUND_WINDOW_CLOSED","message":"Refund window closed"}}', false);
+      const rescheduleConflict: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"RESCHEDULE_CONFLICT","message":"Order changed"}}', false);
+      const orderNotRefundable: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"ORDER_NOT_REFUNDABLE","message":"Order is not refundable"}}', false);
+      const ticketAlreadyUsed: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"TICKET_ALREADY_USED","message":"Ticket was used"}}', false);
+      const refundConflict: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"REFUND_CONFLICT","message":"Refund state changed"}}', false);
+      const orderNotCancellable: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"ORDER_NOT_CANCELLABLE","message":"Order is not cancellable"}}', false);
+      const faceDemoIneligible: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"FACE_DEMO_TICKET_NOT_ELIGIBLE","message":"Ticket is not eligible"}}', false);
 
       expect(unauthorized.code).assertEqual(ApiErrorCode.UNAUTHORIZED);
       expect(unauthorized.retriable).assertFalse();
@@ -170,6 +197,13 @@ export default function tourismBusinessRulesTest() {
         .assertEqual('该操作已完成或请求内容已变化，请刷新后重试');
       expect(cancelledConfirmation.userMessage).assertEqual('预约状态已更新，当前无法确认');
       expect(unavailableInventory.userMessage).assertEqual('当前库存不足，请重新查询可用时段');
+      expect(refundWindowClosed.userMessage).assertEqual('已超过服务端返回的退票截止时间，当前无法退款');
+      expect(rescheduleConflict.userMessage).assertEqual('改签期间订单或库存已变化，请刷新后重试');
+      expect(orderNotRefundable.userMessage).assertEqual('仅已支付的有效订单可以申请退款');
+      expect(ticketAlreadyUsed.userMessage).assertEqual('电子票已核验或失效，无法办理退票或改签');
+      expect(refundConflict.userMessage).assertEqual('订单或库存状态已变化，请刷新订单后重试');
+      expect(orderNotCancellable.userMessage).assertEqual('仅待支付订单可以取消，请刷新订单状态');
+      expect(faceDemoIneligible.userMessage).assertEqual('电子票状态已变化，当前无法进行人脸核验演示');
     });
 
     it('mapsTimeoutBeforeUnknownError', 0, () => {
@@ -272,10 +306,54 @@ export default function tourismBusinessRulesTest() {
       expect(canApplyTicketAction(TicketOrderStatus.PENDING_PAYMENT, TicketOrderAction.PAY)).assertTrue();
       expect(transitionTicketOrderStatus(TicketOrderStatus.PENDING_PAYMENT, TicketOrderAction.PAY))
         .assertEqual(TicketOrderStatus.PAID);
+      expect(canApplyTicketAction(TicketOrderStatus.PENDING_PAYMENT, TicketOrderAction.CANCEL)).assertTrue();
+      expect(transitionTicketOrderStatus(TicketOrderStatus.PENDING_PAYMENT, TicketOrderAction.CANCEL))
+        .assertEqual(TicketOrderStatus.CANCELLED);
+      expect(canApplyTicketAction(TicketOrderStatus.PAID, TicketOrderAction.CANCEL)).assertFalse();
       expect(canApplyTicketAction(TicketOrderStatus.PAID, TicketOrderAction.REFUND)).assertTrue();
       expect(transitionTicketOrderStatus(TicketOrderStatus.PAID, TicketOrderAction.REFUND))
         .assertEqual(TicketOrderStatus.REFUNDED);
       expect(canApplyTicketAction(TicketOrderStatus.REFUNDED, TicketOrderAction.PAY)).assertFalse();
+    });
+
+    it('refreshesTicketOrderCardWhenStatusChanges', 0, () => {
+      const order: TicketOrder = new TicketOrder();
+      order.id = 'ticket-order-1';
+      order.status = TicketOrderStatus.PENDING_PAYMENT;
+      const pendingKey: string = ticketOrderRenderKey(order);
+      order.status = TicketOrderStatus.CANCELLED;
+
+      expect(ticketOrderRenderKey(order) === pendingKey).assertFalse();
+      order.status = TicketOrderStatus.PAID;
+      order.slot_id = 'slot-1';
+      const ticket: ElectronicTicket = new ElectronicTicket();
+      ticket.id = 'ticket-1';
+      ticket.status = ElectronicTicketStatus.ISSUED;
+      order.tickets = [ticket];
+      order.quantity = 1;
+      order.refundable = true;
+      const paidKey: string = ticketOrderRenderKey(order);
+      expect(hasRequiredIssuedTickets(order)).assertTrue();
+      expect(canRefundTicketOrder(order)).assertTrue();
+      order.slot_id = 'slot-2';
+      expect(ticketOrderRenderKey(order) === paidKey).assertFalse();
+      const rescheduledKey: string = ticketOrderRenderKey(order);
+      ticket.status = ElectronicTicketStatus.VOID;
+      const replacement: ElectronicTicket = new ElectronicTicket();
+      replacement.id = 'ticket-2';
+      replacement.status = ElectronicTicketStatus.ISSUED;
+      order.tickets = [ticket, replacement];
+      expect(ticketOrderRenderKey(order) === rescheduledKey).assertFalse();
+      expect(hasRequiredIssuedTickets(order)).assertTrue();
+      expect(canRefundTicketOrder(order)).assertTrue();
+      replacement.status = ElectronicTicketStatus.USED;
+      expect(hasRequiredIssuedTickets(order)).assertFalse();
+      expect(canRefundTicketOrder(order)).assertFalse();
+      const legacy: TicketOrder[] = normalizeCachedTicketOrders(
+        '[{"id":"legacy","status":"PAID","quantity":1,"tickets":[]}]');
+      expect(legacy.length).assertEqual(1);
+      expect(legacy[0].refund_deadline_at === null).assertTrue();
+      expect(legacy[0].refundable).assertFalse();
     });
 
     it('detectsTicketInventoryAndPriceChanges', 0, () => {
@@ -462,6 +540,20 @@ export default function tourismBusinessRulesTest() {
       expect(validateStayBooking('2026-09-02', '2026-09-04', 1, 2).valid).assertTrue();
       expect(validateStayBooking('2026-09-04', '2026-09-02', 1, 2).valid).assertFalse();
       expect(validateTimedBooking('2026-09-02T18:00:00+08:00', 4).valid).assertTrue();
+      const diningBucket: AvailabilityBucket = new AvailabilityBucket();
+      diningBucket.resource_id = 'meal-1';
+      diningBucket.business_date = '2026-09-02';
+      diningBucket.start_at = '2026-09-02T18:00:00+08:00';
+      diningBucket.remaining = 3;
+      expect(isCurrentAvailableTimedBucket(
+        [diningBucket], 'meal-1', diningBucket.start_at, '2026-09-02', '2026-09-02')).assertTrue();
+      expect(isCurrentAvailableTimedBucket(
+        [diningBucket], 'meal-2', diningBucket.start_at, '2026-09-02', '2026-09-02')).assertFalse();
+      expect(isCurrentAvailableTimedBucket(
+        [diningBucket], 'meal-1', diningBucket.start_at, '2026-09-03', '2026-09-03')).assertFalse();
+      diningBucket.remaining = 0;
+      expect(isCurrentAvailableTimedBucket(
+        [diningBucket], 'meal-1', diningBucket.start_at, '2026-09-02', '2026-09-02')).assertFalse();
       expect(validateReview(5, '服务体验很好').valid).assertTrue();
       expect(validateReview(0, '服务体验很好').valid).assertFalse();
     });

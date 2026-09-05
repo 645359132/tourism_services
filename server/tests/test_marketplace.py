@@ -814,6 +814,41 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
     assert ticket_rejected.status_code == 409
     assert ticket_rejected.json()["error"]["code"] == "SCHEDULE_CONFLICT"
 
+    # 模拟用户停留在确认页直至预约占位过期。过期 HELD 记录即使尚未被列表接口清理,
+    # 也不应继续阻塞同一时段的门票下单; 跨资源写操作应在用户时程锁内完成清理。
+    async def expire_reservation_hold() -> None:
+        async with marketplace_harness.session_factory() as session:
+            await session.execute(
+                update(Reservation)
+                .where(Reservation.id == UUID(reserved.json()["id"]))
+                .values(hold_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+            await session.commit()
+
+    asyncio.run(expire_reservation_hold())
+    ticket_after_expiry = marketplace_harness.client.post(
+        "/api/v1/ticketing/orders",
+        headers=_bearer(token),
+        json={
+            "slot_id": str(reservation_slot_id),
+            "quantity": 1,
+            "idempotency_key": "ticket-after-expired-reservation-0001",
+        },
+    )
+    assert ticket_after_expiry.status_code == 201, ticket_after_expiry.json()
+
+    async def expired_reservation_status() -> str:
+        async with marketplace_harness.session_factory() as session:
+            status = await session.scalar(
+                select(Reservation.status).where(
+                    Reservation.id == UUID(reserved.json()["id"])
+                )
+            )
+            assert status is not None
+            return status
+
+    assert asyncio.run(expired_reservation_status()) == "EXPIRED"
+
     race_session_id, race_slot_id = asyncio.run(overlapping_pair(7))
 
     async def cross_race() -> list[str]:

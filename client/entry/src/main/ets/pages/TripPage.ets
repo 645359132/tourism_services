@@ -15,6 +15,7 @@ import { AppStore } from '../stores/AppStore';
 import { AccessibilitySettings, AccessibilityStore } from '../stores/AccessibilityStore';
 import { AuthStore } from '../stores/AuthStore';
 import { TravelPersistenceStore } from '../stores/TravelPersistenceStore';
+import { formatShanghaiTime } from '../utils/DateTimeRules';
 import {
   GuideRuleResult,
   ReplanAssessment,
@@ -217,11 +218,7 @@ export struct TripPage {
   }
 
   private timeText(value: string): string {
-    const parsed: number = Date.parse(value);
-    if (Number.isNaN(parsed)) {
-      return value.length >= 16 ? value.substring(11, 16) : value;
-    }
-    return new Date(parsed + 8 * 60 * 60 * 1000).toISOString().substring(11, 16);
+    return formatShanghaiTime(value);
   }
 
   @Builder
