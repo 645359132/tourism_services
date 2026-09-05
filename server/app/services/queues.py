@@ -478,47 +478,47 @@ async def leave_queue(
         actor_is_admin=actor_is_admin,
     )
     request_hash = _hash_payload({"queue_id": str(queue_id)})
-    if context.entry.status == QUEUE_LEFT:
-        if (
-            context.entry.leave_idempotency_key != idempotency_key
-            or context.entry.leave_request_hash != request_hash
-        ):
-            raise _error(409, "IDEMPOTENCY_CONFLICT", "Queue leave key differs")
-        return context
-    if context.entry.status not in ACTIVE_QUEUE_STATUSES:
-        raise _error(409, "QUEUE_NOT_LEAVABLE", "Queue entry is not active")
-    transitioned = await session.execute(
-        update(QueueEntry)
-        .execution_options(synchronize_session=False)
-        .where(
-            QueueEntry.id == queue_id,
-            QueueEntry.status == context.entry.status,
-            QueueEntry.version == context.entry.version,
+    for _ in range(3):
+        if context.entry.status == QUEUE_LEFT:
+            if (
+                context.entry.leave_idempotency_key != idempotency_key
+                or context.entry.leave_request_hash != request_hash
+            ):
+                raise _error(409, "IDEMPOTENCY_CONFLICT", "Queue leave key differs")
+            return context
+        if context.entry.status not in ACTIVE_QUEUE_STATUSES:
+            raise _error(409, "QUEUE_NOT_LEAVABLE", "Queue entry is not active")
+        transitioned = await session.execute(
+            update(QueueEntry)
+            .execution_options(synchronize_session=False)
+            .where(
+                QueueEntry.id == queue_id,
+                QueueEntry.status == context.entry.status,
+                QueueEntry.version == context.entry.version,
+            )
+            .values(
+                status=QUEUE_LEFT,
+                active_key=None,
+                leave_idempotency_key=idempotency_key,
+                leave_request_hash=request_hash,
+                left_at=datetime.now(UTC),
+                sequence=QueueEntry.sequence + 1,
+                version=QueueEntry.version + 1,
+            )
         )
-        .values(
-            status=QUEUE_LEFT,
-            active_key=None,
-            leave_idempotency_key=idempotency_key,
-            leave_request_hash=request_hash,
-            left_at=datetime.now(UTC),
-            sequence=QueueEntry.sequence + 1,
-            version=QueueEntry.version + 1,
-        )
-    )
-    if transitioned.rowcount != 1:
+        if transitioned.rowcount == 1:
+            break
+        # 模拟发布器可能在读取与 CAS 之间把 WAITING 推进为 CALLED/SERVING。
+        # 只要并发后的状态仍活跃, 就重新读取 version 并重试离队, 而不是误报终态冲突。
         await session.rollback()
-        concurrent = await _owned_queue_context(
+        context = await _owned_queue_context(
             session,
             queue_id=queue_id,
             actor_id=actor_id,
             actor_is_admin=actor_is_admin,
         )
-        if (
-            concurrent.entry.status == QUEUE_LEFT
-            and concurrent.entry.leave_idempotency_key == idempotency_key
-        ):
-            return concurrent
-        raise _error(409, "QUEUE_NOT_LEAVABLE", "Queue entry is not active")
+    else:
+        raise _error(409, "QUEUE_NOT_LEAVABLE", "Queue state kept changing during leave")
 
     if context.fast_pass is not None and context.fast_pass.status == "ACTIVE":
         cancelled = await session.execute(

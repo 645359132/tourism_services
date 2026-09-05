@@ -49,7 +49,16 @@ from app.providers.payment import DemoPaymentProvider
 from app.providers.planner import PlanningPreferences, RulesPlanner
 from app.providers.share import DemoShareVerifier
 from app.providers.support import DemoSupportBot
-from app.services import commerce, groups, hospitality, itinerary, points, reservations, ticketing
+from app.services import (
+    commerce,
+    groups,
+    hospitality,
+    itinerary,
+    points,
+    queues,
+    reservations,
+    ticketing,
+)
 
 
 @pytest.mark.asyncio
@@ -124,6 +133,64 @@ async def test_demo_provider_boundaries_are_deterministic_and_explicit() -> None
     assert (await check_in.verify(stamp_code="STAMP-1")).verified is True
     assert (await green.verify(evidence="步")).verified is False
     assert (await green.verify(evidence="步行")).verified is True
+
+
+@pytest.mark.asyncio
+async def test_queue_leave_retries_when_publisher_advances_active_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue_id = uuid4()
+    actor_id = uuid4()
+    request_hash = queues._hash_payload({"queue_id": str(queue_id)})
+    waiting = SimpleNamespace(
+        id=queue_id,
+        status="WAITING",
+        version=1,
+        leave_idempotency_key=None,
+        leave_request_hash=None,
+    )
+    called = SimpleNamespace(
+        id=queue_id,
+        status="CALLED",
+        version=2,
+        leave_idempotency_key=None,
+        leave_request_hash=None,
+    )
+    left = SimpleNamespace(
+        id=queue_id,
+        status="LEFT",
+        version=3,
+        leave_idempotency_key="queue-race-leave-001",
+        leave_request_hash=request_hash,
+    )
+    contexts = [
+        queues.QueueContext(waiting, SimpleNamespace(), None, None),
+        queues.QueueContext(called, SimpleNamespace(), None, None),
+    ]
+
+    async def owned_context(*_args: object, **_kwargs: object) -> queues.QueueContext:
+        return contexts.pop(0)
+
+    async def loaded_context(*_args: object, **_kwargs: object) -> queues.QueueContext:
+        return queues.QueueContext(left, SimpleNamespace(), None, None)
+
+    monkeypatch.setattr(queues, "_owned_queue_context", owned_context)
+    monkeypatch.setattr(queues, "_load_queue_context", loaded_context)
+    session = AsyncMock(spec=AsyncSession)
+    session.execute.side_effect = [SimpleNamespace(rowcount=0), SimpleNamespace(rowcount=1)]
+    user = SimpleNamespace(id=actor_id, role_names={"tourist"})
+
+    result = await queues.leave_queue(
+        session,
+        queue_id=queue_id,
+        user=user,
+        idempotency_key="queue-race-leave-001",
+    )
+
+    assert result.entry.status == "LEFT"
+    assert session.execute.await_count == 2
+    session.rollback.assert_awaited_once()
+    session.commit.assert_awaited_once()
 
 
 def _attraction(
@@ -790,36 +857,12 @@ async def test_reservation_group_and_itinerary_integrity_guards() -> None:
         )
     assert hidden_itinerary.value.code == "ITINERARY_NOT_FOUND"
 
-    visit_date = date(2030, 1, 2)
-    first_slot = SimpleNamespace(
-        visit_date=visit_date,
-        start_time=time(9),
-        end_time=time(10),
+    assert itinerary._is_legacy_admission_commitment(
+        SimpleNamespace(kind="COMMITMENT", ref_type="ticket_order")
     )
-    second_slot = SimpleNamespace(
-        visit_date=visit_date,
-        start_time=time(9, 30),
-        end_time=time(10, 30),
+    assert not itinerary._is_legacy_admission_commitment(
+        SimpleNamespace(kind="COMMITMENT", ref_type="reservation")
     )
-    orders = [
-        SimpleNamespace(
-            id=uuid4(),
-            items=[SimpleNamespace(slot=first_slot, ticket_type_name="成人票")],
-        ),
-        SimpleNamespace(
-            id=uuid4(),
-            items=[SimpleNamespace(slot=second_slot, ticket_type_name="演出票")],
-        ),
-    ]
-    commitment_session = AsyncMock(spec=AsyncSession)
-    commitment_session.scalars.return_value = orders
-    with pytest.raises(AppError) as conflict:
-        await itinerary._ticket_commitments(
-            commitment_session,
-            user_id=user.id,
-            visit_date=visit_date,
-        )
-    assert conflict.value.code == "MANDATORY_COMMITMENT_CONFLICT"
 
 
 @pytest.mark.asyncio

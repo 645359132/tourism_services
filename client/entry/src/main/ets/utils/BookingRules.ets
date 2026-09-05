@@ -97,6 +97,12 @@ export function detectSessionInventoryChange(previous: ExperienceSession | null,
   return new SessionInventoryChange(true, false, `场次库存已更新，当前剩余 ${current.remaining} 个名额`);
 }
 
+export function experienceSessionRenderKey(session: ExperienceSession): string {
+  // 场次是普通 JSON 对象；库存与状态变化必须进入 key，避免 ArkUI 复用旧卡片。
+  return `${session.id}:${session.experience_id}:${session.starts_at}:${session.ends_at}:` +
+    `${session.remaining}:${session.capacity}:${session.status}`;
+}
+
 function reservationIntervalsOverlap(firstStart: string, firstEnd: string,
   secondStart: string, secondEnd: string): boolean {
   const firstStartMs: number = Date.parse(firstStart);
@@ -108,6 +114,33 @@ function reservationIntervalsOverlap(firstStart: string, firstEnd: string,
     return firstStartMs < secondEndMs && firstEndMs > secondStartMs;
   }
   return firstStart < secondEnd && firstEnd > secondStart;
+}
+
+function stayMilestonesOverlap(reservation: Reservation, startsAt: string, endsAt: string): boolean {
+  const requestedStart: number = Date.parse(startsAt);
+  const requestedEnd: number = Date.parse(endsAt);
+  let stayStart: number = Date.parse(reservation.starts_at);
+  let stayEnd: number = Date.parse(reservation.ends_at);
+  for (let index: number = 0; index < reservation.allocations.length; index++) {
+    const allocationStart: number = Date.parse(reservation.allocations[index].starts_at);
+    const allocationEnd: number = Date.parse(reservation.allocations[index].ends_at);
+    if (!Number.isNaN(allocationStart) && (Number.isNaN(stayStart) || allocationStart < stayStart)) {
+      stayStart = allocationStart;
+    }
+    if (!Number.isNaN(allocationEnd) && (Number.isNaN(stayEnd) || allocationEnd > stayEnd)) {
+      stayEnd = allocationEnd;
+    }
+  }
+  if (Number.isNaN(requestedStart) || Number.isNaN(requestedEnd) || Number.isNaN(stayStart) ||
+    Number.isNaN(stayEnd) || requestedStart >= requestedEnd || stayStart >= stayEnd) {
+    // 非法或旧版残缺时间交给服务端权威校验，客户端不能用猜测阻止用户提交。
+    return false;
+  }
+  const handoffMs: number = 30 * 60 * 1000;
+  const checkInEnd: number = Math.min(stayStart + handoffMs, stayEnd);
+  const checkOutStart: number = Math.max(stayStart, stayEnd - handoffMs);
+  return (requestedStart < checkInEnd && requestedEnd > stayStart) ||
+    (requestedStart < stayEnd && requestedEnd > checkOutStart);
 }
 
 export function hasActiveStayConflict(reservations: Reservation[], checkIn: string, checkOut: string): boolean {
@@ -155,6 +188,17 @@ export function hasReservationConflict(reservations: Reservation[], startsAt: st
   for (let reservationIndex: number = 0; reservationIndex < reservations.length; reservationIndex++) {
     const reservation: Reservation = reservations[reservationIndex];
     if (reservation.status !== ReservationStatus.HELD && reservation.status !== ReservationStatus.CONFIRMED) {
+      continue;
+    }
+    // 住宿仅在入住、退房各 30 分钟形成硬承诺，不能把整晚误判为无法参加演出。
+    // 组合产品的分配项目前没有资源类型字段，客户端不做猜测，由服务端逐库存桶权威裁决。
+    if (reservation.kind === ReservationKind.STAY) {
+      if (stayMilestonesOverlap(reservation, startsAt, endsAt)) {
+        return true;
+      }
+      continue;
+    }
+    if (reservation.kind === ReservationKind.BUNDLE) {
       continue;
     }
     for (let allocationIndex: number = 0; allocationIndex < reservation.allocations.length; allocationIndex++) {

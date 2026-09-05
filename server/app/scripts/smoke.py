@@ -255,12 +255,13 @@ class SmokeRunner:
         if slot is None:
             raise SmokeFailure("ticket slots: no sellable seeded slot found")
 
-        self._request(
+        _, quote_payload = self._request(
             "POST",
             "/api/v1/ticketing/quotes",
             label="ticket quote",
             json={"slot_id": slot["id"], "quantity": 1},
         )
+        quote = require_object(quote_payload, label="ticket quote")
         _, created_payload = self._request(
             "POST",
             "/api/v1/ticketing/orders",
@@ -270,6 +271,7 @@ class SmokeRunner:
             json={
                 "slot_id": slot["id"],
                 "quantity": 1,
+                "quote_token": quote["quote_token"],
                 "idempotency_key": self._key("ticket-order"),
             },
         )

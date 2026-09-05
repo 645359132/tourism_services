@@ -56,6 +56,10 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
     return new ApiErrorInfo(ApiErrorCode.TIMEOUT, '请求超时，请稍后重试', statusCode, true, serverCode);
   }
   if (statusCode === 400 || statusCode === 422) {
+    if (serverCode === 'INVALID_QUOTE') {
+      return new ApiErrorInfo(
+        ApiErrorCode.VALIDATION, '门票报价凭证无效，请重新获取价格', statusCode, false, serverCode);
+    }
     return new ApiErrorInfo(ApiErrorCode.VALIDATION, '提交的信息有误，请检查后重试', statusCode, false, serverCode);
   }
   if (statusCode === 401) {
@@ -65,13 +69,20 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
     return new ApiErrorInfo(ApiErrorCode.FORBIDDEN, '暂无权限访问此服务', statusCode, false, serverCode);
   }
   if (statusCode === 404) {
+    if (serverCode === 'PRODUCT_NOT_FOUND') {
+      return new ApiErrorInfo(ApiErrorCode.NOT_FOUND, '商品已下架，已为你刷新目录', statusCode, false, serverCode);
+    }
+    if (serverCode === 'CART_ITEM_NOT_FOUND') {
+      return new ApiErrorInfo(
+        ApiErrorCode.NOT_FOUND, '购物车商品已变化，已为你刷新购物车', statusCode, false, serverCode);
+    }
     return new ApiErrorInfo(ApiErrorCode.NOT_FOUND, '未找到请求的内容', statusCode, false, serverCode);
   }
   if (statusCode === 409) {
     let conflictMessage: string = '当前操作与已有数据冲突';
     switch (serverCode) {
       case 'SCHEDULE_CONFLICT':
-        conflictMessage = '所选时段与已有门票或预约重叠，请更换时段或先处理已有订单';
+        conflictMessage = '所选时段与已有有效预约重叠，请更换时段或先处理已有预约';
         break;
       case 'INSUFFICIENT_INVENTORY':
       case 'INVENTORY_UNAVAILABLE':
@@ -79,6 +90,27 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
         break;
       case 'INVENTORY_CONFLICT':
         conflictMessage = '库存状态已变化，请重新查询后再试';
+        break;
+      case 'INSUFFICIENT_STOCK':
+        conflictMessage = '商品余量不足，已为你刷新商品与购物车';
+        break;
+      case 'PRODUCT_UNAVAILABLE':
+        conflictMessage = '商品已下架或暂不可售，已为你刷新目录';
+        break;
+      case 'CART_CONFLICT':
+        conflictMessage = '购物车内容已变化，已为你刷新后请重新结算';
+        break;
+      case 'CART_EMPTY':
+        conflictMessage = '购物车已为空，请返回商品页重新选择';
+        break;
+      case 'SHOP_ORDER_EXPIRED':
+        conflictMessage = '待支付订单已过期，预占库存已经释放';
+        break;
+      case 'SHOP_ORDER_NOT_PAYABLE':
+        conflictMessage = '商城订单已过期或状态已变化，当前无法支付';
+        break;
+      case 'CHECKOUT_CONFLICT':
+        conflictMessage = '结算期间购物车或库存已变化，已刷新后请重试';
         break;
       case 'RESERVATION_EXPIRED':
         conflictMessage = '预约保留已过期，请重新查询库存后预约';
@@ -103,6 +135,12 @@ export function mapApiError(statusCode: number, rawMessage: string, offline: boo
         break;
       case 'ORDER_NOT_PAYABLE':
         conflictMessage = '订单已过期或状态已变化，当前无法支付';
+        break;
+      case 'QUOTE_EXPIRED':
+        conflictMessage = '门票报价已过期，请重新获取价格';
+        break;
+      case 'QUOTE_MISMATCH':
+        conflictMessage = '门票日期、场次、数量或报价不匹配，请重新选择';
         break;
       case 'REFUND_WINDOW_CLOSED':
         conflictMessage = '已超过服务端返回的退票截止时间，当前无法退款';

@@ -9,10 +9,10 @@
 ## 功能概览
 
 - 游客自助注册并自动登录、JWT 登录、刷新令牌轮换与重放防护、Argon2id 密码散列，以及游客/商户/客服/管理员 RBAC。
-- 动态票价、分时库存、幂等下单、待支付订单取消、演示支付、短时电子票二维码、退款、改签，以及不采集生物信息的人脸核验接口演示。
+- 动态票价、日期/场次/价格签名报价、分时库存、幂等下单、待支付订单取消、演示支付、退款回补余票、改签，以及不采集生物信息的人脸核验接口演示。
 - 景点与文化讲解（含可替换 `audio_url` 接口字段）、示意地图、模拟人流 WebSocket、偏好行程、冲突检查与动态重排。
-- 项目/演出预约、虚拟排队、FastPass、酒店/民宿/餐饮和原子组合预约。
-- 商品、购物车、订单、活动、不可变积分流水、反馈回访、客服 WebSocket 和同行协作。
+- 仅按真实时间重叠拦截的项目/演出预约、虚拟排队、FastPass、酒店/民宿/餐饮和原子组合预约。
+- 服务端权威商品余量、购物车、库存预占订单、活动、不可变积分流水、反馈回访、客服 WebSocket 和同行协作。
 - phone/tablet 响应式五栏导航、深浅色、大字/高对比、无障碍路线与便民设施。
 - 五项离线旅行资产、ETag/校验、用户隔离缓存、安全 outbox、只读冷启动和演示 SOS。
 - 文化数字护照、幂等打卡、绿色任务及与商城共用的积分账户。
@@ -274,7 +274,7 @@ ArkUI 页面通过类型化 Service 和统一 `HttpClient`/WebSocket 客户端�
 |---:|---|---|---|
 | 1 | 个性化智能旅游管家 | 兴趣、同行人、体力、无障碍、人流和步行成本的可解释规则评分 | [planner.py](server/app/providers/planner.py)、[itinerary.py](server/app/services/itinerary.py)、[TripPage.ets](client/entry/src/main/ets/pages/TripPage.ets) |
 | 2 | 动态避堵与最优路线 | 模拟人流单调推送、示意图最短路、拥挤替代建议与按最新快照重排 | [crowd.py](server/app/realtime/crowd.py)、[map.py](server/app/providers/map.py)、[GuidePage.ets](client/entry/src/main/ets/pages/GuidePage.ets) |
-| 3 | 多订单冲突优化器 | 行程、门票、预约及步行缓冲的冲突检测、版本化建议与安全重排 | [itinerary.py](server/app/services/itinerary.py)、[TripConflict.ets](client/entry/src/main/ets/utils/TripConflict.ets) |
+| 3 | 多订单冲突优化器 | 活动/预约真实重叠检测、住宿办理里程碑、步行可行性建议与安全重排；普通入园票按准入窗口处理 | [itinerary.py](server/app/services/itinerary.py)、[reservations.py](server/app/services/reservations.py)、[TripConflict.ets](client/entry/src/main/ets/utils/TripConflict.ets) |
 | 4 | 排队与行程联动 | 虚拟队列/FastPass 更新生成带 itinerary revision 的调整建议，客户端拒绝过期建议 | [queues.py](server/app/services/queues.py)、[reservations.py](server/app/services/reservations.py)、[ExperienceBookingView.ets](client/entry/src/main/ets/components/booking/ExperienceBookingView.ets) |
 | 5 | 多人同行协作 | 邀请加入、成员状态、行程 revision，以及群组级与成员级的行程/位置/状态双重隐私控制 | [groups.py](server/app/services/groups.py)、[GroupCollaborationView.ets](client/entry/src/main/ets/components/profile/GroupCollaborationView.ets) |
 | 6 | 适老与无障碍 | 大字、高对比、持久化偏好、720vp 响应式布局、无障碍路线过滤及便民设施 | [AccessibilityStore.ets](client/entry/src/main/ets/stores/AccessibilityStore.ets)、[AccessibilityView.ets](client/entry/src/main/ets/components/profile/AccessibilityView.ets)、[engagement.py](server/app/services/engagement.py) |
@@ -304,9 +304,9 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 | 检查 | 已接受结果 |
 |---|---|
-| 服务端 pytest | 154 tests passed；分支覆盖率 73.00%，通过 `>= 70%` 门禁；包含游客注册、过期预约清理、门票取消、人脸演示边界与 PostgreSQL 离线 DDL 门禁 |
+| 服务端 pytest | 159 tests passed；分支覆盖率 72.89%，通过 `>= 70%` 门禁；包含签名报价、退款库存、演出冲突、商城库存、队列 CAS 与 PostgreSQL 离线 DDL 门禁 |
 | Ruff | `uv run ruff check .` 通过 |
-| HarmonyOS 本地业务测试 | Hvigor `test`：47 passed，Failure 0，Error 0 |
+| HarmonyOS 本地业务测试 | Hvigor `test`：49 passed，Failure 0，Error 0 |
 | 真实网络 smoke | 当前 runner 为 49/49，其中注册、注册会话和重复用户名占 3 项；覆盖 REST 及人流、排队、客服 3 条 WebSocket |
 | Locust 本机基线 | 5 users / 30 s；CSV 320 requests、0 failures、11.42 req/s、aggregate p95 160 ms |
 | Locust Compose 基线 | PostgreSQL 16 + Redis 7 + 双 worker；CSV 319 requests、0 failures、11.33 req/s、aggregate p95 130 ms |

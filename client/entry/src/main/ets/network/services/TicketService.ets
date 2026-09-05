@@ -24,11 +24,13 @@ class QuotePayload {
 class CreateOrderPayload {
   slot_id: string;
   quantity: number;
+  quote_token: string;
   idempotency_key: string;
 
-  constructor(slotId: string, quantity: number, idempotencyKey: string) {
+  constructor(slotId: string, quantity: number, quoteToken: string, idempotencyKey: string) {
     this.slot_id = slotId;
     this.quantity = quantity;
+    this.quote_token = quoteToken;
     this.idempotency_key = idempotencyKey;
   }
 }
@@ -83,8 +85,9 @@ export class TicketService {
       new ApiRequest('/ticketing/quotes', ApiMethod.POST, JSON.stringify(payload), false, 0));
   }
 
-  createOrder(slotId: string, quantity: number, idempotencyKey: string): Promise<NetworkResult<TicketOrder>> {
-    const payload: CreateOrderPayload = new CreateOrderPayload(slotId, quantity, idempotencyKey);
+  createOrder(slotId: string, quantity: number, quoteToken: string,
+    idempotencyKey: string): Promise<NetworkResult<TicketOrder>> {
+    const payload: CreateOrderPayload = new CreateOrderPayload(slotId, quantity, quoteToken, idempotencyKey);
     return this.client.request<TicketOrder>(
       new ApiRequest('/ticketing/orders', ApiMethod.POST, JSON.stringify(payload), true, 0));
   }

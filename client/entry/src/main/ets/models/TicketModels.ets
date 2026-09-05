@@ -54,10 +54,15 @@ export class TicketSlotListResponse {
 export class TicketQuote {
   id: string = '';
   slot_id: string = '';
+  ticket_type_id: string = '';
+  visit_date: string = '';
+  start_time: string = '';
+  end_time: string = '';
   quantity: number = 0;
   unit_price_cents: number = 0;
   total_cents: number = 0;
   expires_at: string = '';
+  quote_token: string = '';
   pricing_explanation: string[] = [];
 }
 

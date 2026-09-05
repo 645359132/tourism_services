@@ -147,6 +147,12 @@ export function ticketOrderRenderKey(order: TicketOrder): string {
     `${order.refundable}${ticketFingerprint}`;
 }
 
+export function ticketSlotRenderKey(slot: TicketSlot): string {
+  // 场次对象来自每次 GET 的普通 JSON；把动态库存、价格和日期纳入 key，刷新后卡片才会重建。
+  return `${slot.id}:${slot.ticket_type_id}:${slot.visit_date}:${slot.start_time}:${slot.end_time}:` +
+    `${slot.remaining}:${slot.capacity}:${slot.unit_price_cents}`;
+}
+
 export function hasRequiredIssuedTickets(order: TicketOrder): boolean {
   if (order.status !== TicketOrderStatus.PAID || order.tickets.length === 0) {
     return false;

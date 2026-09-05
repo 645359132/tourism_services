@@ -20,17 +20,17 @@
 
 ## 3. 多订单冲突优化器
 
-- **用户入口**：在“行程”页生成行程后点击“检查冲突”或“按最新人流重排”；已付款门票会显示为锁定承诺，冲突卡列出时间重叠、步行缓冲或路线不可达等原因及建议动作。
-- **客户端状态保护**：本地时间轴检查先复制再排序，不改变服务端顺序，并按半开区间判断相邻项；重排请求携带当前 `revision`。响应返回后，客户端再次要求版本递增，并核对所有锁定项的身份、起止时间和位置均未改变，验收失败则拒绝覆盖当前行程。
-- **服务端算法/事务不变量**：所有时间段统一按 `[start, end)` 判断，首尾相接不误报；冲突检查同时纳入已付款门票、其他预约、路线可达性和默认步行缓冲。已付款门票投影为 `locked` 项，只能让后续景点绕开，不能被自动移动或删除。重排先校验期望版本，写入时再用数据库条件更新执行原子比较并递增版本，封住“检查后、提交前”的并发窗口。
+- **用户入口**：在“行程”页修改同行人群和体力等级后重新生成，再点击“检查冲突”或“按最新人流重排”；冲突卡列出真实活动重叠、步行可行性或路线不可达等原因及建议动作。
+- **客户端状态保护**：同行人群与体力控件直接绑定页面 `@State` 并显示当前选择。本地时间轴按半开区间判断相邻项；住宿只检查入住和退房各 30 分钟。重排请求携带当前 `revision`，响应仍须通过版本递增及真实锁定项不变的二次验收。
+- **服务端算法/事务不变量**：交易层按 `[start, end)` 只拒绝真实活动重叠，首尾相接可以预约；步行缓冲留在行程可行性检查，不再误作下单硬限制。普通入园票是准入窗口，不投影为独占 `COMMITMENT`；旧版本留下的普通门票项会在响应中隐藏并在成功重排后清理。重排继续用期望版本和数据库条件更新原子递增版本。
 - **演示/外部能力边界**：优化器只处理本系统数据库中的门票、预约、行程和本地示意图，不读取第三方酒店、航班、日历或真实交通订单。建议是规则计算结果，不保证现实世界一定可达或无冲突。
-- **关键源码与测试**：[冲突检测与重排](../server/app/services/itinerary.py)、[跨资源预约冲突](../server/app/services/reservations.py)、[客户端时间轴检查](../client/entry/src/main/ets/utils/TripConflict.ets)、[重排响应验收](../client/entry/src/main/ets/pages/TripPage.ets)；服务端重点看门票承诺、步行缓冲和保留锁定项的测试（[test_guide_itinerary.py](../server/tests/test_guide_itinerary.py)）、`test_reservation_group_and_itinerary_integrity_guards`（[test_quality_edges.py](../server/tests/test_quality_edges.py)）及跨资源并发测试（[test_marketplace.py](../server/tests/test_marketplace.py)），客户端重点看 `detectsOverlappingTripItems`、`allowsAdjacentTripItems`、`acceptsReplanOnlyWhenLockedItemsStayFixed`（[LocalUnit.test.ets](../client/entry/src/test/LocalUnit.test.ets)）。
+- **关键源码与测试**：[冲突检测与重排](../server/app/services/itinerary.py)、[预约冲突](../server/app/services/reservations.py)、[行程页面](../client/entry/src/main/ets/pages/TripPage.ets)、[客户端预约规则](../client/entry/src/main/ets/utils/BookingRules.ets)；服务端重点看准入票兼容及步行缓冲（[test_guide_itinerary.py](../server/tests/test_guide_itinerary.py)）和演出相邻/重叠回归（[test_experience_schedule_regressions.py](../server/tests/test_experience_schedule_regressions.py)，客户端对应 [ItineraryExperienceRegression.test.ets](../client/entry/src/test/ItineraryExperienceRegression.test.ets)）。
 
 ## 4. 排队与行程联动
 
 - **用户入口**：从首页“智慧排队”或“项目排队与餐住”进入项目列表，预约场次、加入虚拟队列并查看等待时间；当等待变化产生行程建议时，由用户点击后才应用。FastPass 和叫号提醒也在该页展示。
 - **客户端状态保护**：预约、入队、离队和 FastPass 请求用 `operationBusy` 防重复点击，并在可重试失败期间复用同一幂等键。队列事件必须同时命中当前队列 ID 和递增 `sequence`；行程建议在接收和点击应用两个时点都必须命中当前行程 ID 与版本，过期建议直接丢弃。终态队列会关闭实时连接。
-- **服务端算法/事务不变量**：每个项目用原子计数器分配入队顺序，队列状态变更递增序列；推荐会排除高拥挤景点，并要求往返步行加游览时长能放入当前等待窗口。队列事件只携带建议生成时观察到的行程版本，不直接修改行程。最终预约仍获取用户级日程锁，并在同一事务内重新检查门票、项目、餐住与库存冲突；数据库条件更新和唯一约束裁决并发竞争。
+- **服务端算法/事务不变量**：每个项目用原子计数器分配入队顺序，队列状态变更递增序列；推荐会排除高拥挤景点，并要求往返步行加游览时长能放入当前等待窗口。队列事件只携带建议生成时观察到的行程版本，不直接修改行程。最终预约仍获取用户级日程锁，并在同一事务内重新检查演出、项目、餐饮、住宿办理时段与库存；数据库条件更新和唯一约束裁决并发竞争。
 - **演示/外部能力边界**：等待时间和推进事件来自模拟发布器，FastPass 不接真实支付，也不承诺现实优先入场；叫号仅为应用内状态，没有系统通知、短信、电话或物理队列/闸机连接。
 - **关键源码与测试**：[队列服务](../server/app/services/queues.py)、[预约服务](../server/app/services/reservations.py)、[排队页面](../client/entry/src/main/ets/components/booking/ExperienceBookingView.ets)、[队列 WebSocket 客户端](../client/entry/src/main/ets/network/QueueSocket.ets)；服务端重点看预约生命周期、队列/FastPass 状态机和并发配额测试（[test_marketplace.py](../server/tests/test_marketplace.py)）。行程版本建议的直接客户端证据是 `parsesQueueEventAndRejectsStaleSequence`、`rejectsStaleQueueItinerarySuggestion`、`reusesQueueJoinIdempotencyKeyAfterNetworkFailure`（[LocalUnit.test.ets](../client/entry/src/test/LocalUnit.test.ets)）。
 

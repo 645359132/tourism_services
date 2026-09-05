@@ -55,6 +55,24 @@ export class ReplanAssessment {
   }
 }
 
+export function visibleItineraryItems(items: ItineraryItem[]): ItineraryItem[] {
+  const visible: ItineraryItem[] = [];
+  for (let index: number = 0; index < items.length; index++) {
+    // 旧版曾把普通入园票保存成独占 COMMITMENT。它只是准入窗口，离线缓存也应隐藏。
+    // 历史客户端契约没有 ref_type；现有版本产生过的 COMMITMENT 仅有普通门票窗口。
+    if (items[index].kind === 'COMMITMENT') {
+      continue;
+    }
+    visible.push(items[index]);
+  }
+  return visible;
+}
+
+export function itineraryItemRenderKey(item: ItineraryItem): string {
+  return `${item.id}:${item.kind}:${item.ref_id}:${item.title}:${item.start_at}:${item.end_at}:` +
+    `${item.locked}:${item.crowd_level}:${item.walk_minutes}:${item.explanation.join('|')}`;
+}
+
 export function plannedRouteStepLabel(routeNodeIds: string[], nodeId: string): string {
   const index: number = routeNodeIds.indexOf(nodeId);
   if (index < 0) {

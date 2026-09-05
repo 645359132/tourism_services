@@ -40,7 +40,7 @@ from app.scripts.seed import DEMO_PASSWORD, seed_database
 from app.services.auth import get_user_by_id
 from app.services.queues import buy_fast_pass, join_queue
 from app.services.reservations import create_experience_reservation
-from app.services.ticketing import create_ticket_order
+from app.services.ticketing import create_ticket_order, quote_ticket_order
 
 
 @dataclass(slots=True)
@@ -755,7 +755,7 @@ async def _experience_id_for_session(
         return experience_id
 
 
-def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_winner(
+def test_reservation_and_admission_ticket_can_coexist_in_both_write_orders(
     marketplace_harness: MarketplaceHarness,
 ) -> None:
     async def overlapping_pair(day_offset: int) -> tuple[UUID, UUID]:
@@ -802,20 +802,25 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
         },
     )
     assert reserved.status_code == 201, reserved.json()
-    ticket_rejected = marketplace_harness.client.post(
+    first_quote = marketplace_harness.client.post(
+        "/api/v1/ticketing/quotes",
+        json={"slot_id": str(reservation_slot_id), "quantity": 1},
+    )
+    assert first_quote.status_code == 200
+    ticket_after_reservation = marketplace_harness.client.post(
         "/api/v1/ticketing/orders",
         headers=_bearer(token),
         json={
             "slot_id": str(reservation_slot_id),
             "quantity": 1,
+            "quote_token": first_quote.json()["quote_token"],
             "idempotency_key": "ticket-after-reservation-0001",
         },
     )
-    assert ticket_rejected.status_code == 409
-    assert ticket_rejected.json()["error"]["code"] == "SCHEDULE_CONFLICT"
+    assert ticket_after_reservation.status_code == 201, ticket_after_reservation.json()
 
-    # 模拟用户停留在确认页直至预约占位过期。过期 HELD 记录即使尚未被列表接口清理,
-    # 也不应继续阻塞同一时段的门票下单; 跨资源写操作应在用户时程锁内完成清理。
+    # 门票写路径仍会顺手释放该用户已经过期的预约占位; 但入园票与园内活动
+    # 无论调用顺序如何都不互斥, 因为门票时段是准入窗口而非独占活动。
     async def expire_reservation_hold() -> None:
         async with marketplace_harness.session_factory() as session:
             await session.execute(
@@ -826,12 +831,18 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
             await session.commit()
 
     asyncio.run(expire_reservation_hold())
+    second_quote = marketplace_harness.client.post(
+        "/api/v1/ticketing/quotes",
+        json={"slot_id": str(reservation_slot_id), "quantity": 1},
+    )
+    assert second_quote.status_code == 200
     ticket_after_expiry = marketplace_harness.client.post(
         "/api/v1/ticketing/orders",
         headers=_bearer(token),
         json={
             "slot_id": str(reservation_slot_id),
             "quantity": 1,
+            "quote_token": second_quote.json()["quote_token"],
             "idempotency_key": "ticket-after-expired-reservation-0001",
         },
     )
@@ -884,6 +895,12 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
                 assert user_id is not None
                 user = await get_user_by_id(session, user_id)
                 assert user is not None
+                quote = await quote_ticket_order(
+                    session,
+                    slot_id=race_slot_id,
+                    quantity=1,
+                    settings=marketplace_harness.settings,
+                )
                 await gate.wait()
                 try:
                     await create_ticket_order(
@@ -891,6 +908,7 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
                         user=user,
                         slot_id=race_slot_id,
                         quantity=1,
+                        quote_token=quote.quote_token,
                         idempotency_key="cross-race-ticket",
                         settings=marketplace_harness.settings,
                     )
@@ -904,8 +922,7 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
         return list(await asyncio.gather(reservation_task, ticket_task))
 
     results = asyncio.run(cross_race())
-    assert "SCHEDULE_CONFLICT" in results
-    assert sum(item in {"RESERVATION", "TICKET"} for item in results) == 1
+    assert sorted(results) == ["RESERVATION", "TICKET"]
 
     async def persisted_winner_count() -> int:
         async with marketplace_harness.session_factory() as session:
@@ -930,7 +947,7 @@ def test_reservation_first_ticket_rejected_and_concurrent_cross_slice_has_one_wi
             )
             return reservation_count + ticket_count
 
-    assert asyncio.run(persisted_winner_count()) == 1
+    assert asyncio.run(persisted_winner_count()) == 2
 
 
 def test_concurrent_active_queue_and_last_fastpass_quota_have_single_winners(

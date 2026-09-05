@@ -26,7 +26,11 @@ import { ShopService } from '../network/services/ShopService';
 import {
   ShopRuleResult,
   canPayShopOrder,
+  cartItemRenderKey,
   effectiveProductPrice,
+  pointsRewardRenderKey,
+  shopOrderRenderKey,
+  shopProductRenderKey,
   validateCartQuantity,
   validateCheckout,
   validateRewardRedemption,
@@ -80,6 +84,10 @@ export struct MallPage {
   private payPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private redeemPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private sharePending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  // 商品列表是动态库存视图。版本号避免较早发出的请求晚返回后覆盖最新余量。
+  private catalogRequestVersion: number = 0;
+  private productRequestVersion: number = 0;
+  private privateRequestVersion: number = 0;
 
   aboutToAppear(): void {
     this.loadCatalog();
@@ -118,8 +126,12 @@ export struct MallPage {
   }
 
   private async loadCatalog(): Promise<void> {
+    const requestVersion: number = ++this.catalogRequestVersion;
     this.catalogState = ContentState.LOADING;
     const categoryResult: NetworkResult<ShopCategoryListResponse> = await this.service.listCategories();
+    if (requestVersion !== this.catalogRequestVersion) {
+      return;
+    }
     if (!categoryResult.successful || categoryResult.data === null) {
       this.catalogState = this.stateForError(categoryResult.error);
       this.errorMessage = this.errorText(categoryResult.error);
@@ -127,6 +139,9 @@ export struct MallPage {
     }
     this.categories = categoryResult.data.items;
     const campaignResult: NetworkResult<ShopCampaignListResponse> = await this.service.listCampaigns();
+    if (requestVersion !== this.catalogRequestVersion) {
+      return;
+    }
     if (!campaignResult.successful || campaignResult.data === null) {
       this.catalogState = this.stateForError(campaignResult.error);
       this.errorMessage = this.errorText(campaignResult.error);
@@ -137,8 +152,13 @@ export struct MallPage {
   }
 
   private async loadProducts(): Promise<void> {
+    const requestVersion: number = ++this.productRequestVersion;
+    const requestedCategoryId: string = this.selectedCategoryId;
     this.catalogState = ContentState.LOADING;
-    const result: NetworkResult<ShopProductListResponse> = await this.service.listProducts(this.selectedCategoryId);
+    const result: NetworkResult<ShopProductListResponse> = await this.service.listProducts(requestedCategoryId);
+    if (requestVersion !== this.productRequestVersion || requestedCategoryId !== this.selectedCategoryId) {
+      return;
+    }
     if (!result.successful || result.data === null) {
       this.catalogState = this.stateForError(result.error);
       this.errorMessage = this.errorText(result.error);
@@ -156,8 +176,12 @@ export struct MallPage {
       this.privateState = ContentState.NO_PERMISSION;
       return;
     }
+    const requestVersion: number = ++this.privateRequestVersion;
     this.privateState = ContentState.LOADING;
     const cartResult: NetworkResult<ShoppingCart> = await this.service.getCart();
+    if (requestVersion !== this.privateRequestVersion) {
+      return;
+    }
     if (!cartResult.successful || cartResult.data === null) {
       this.privateState = this.stateForError(cartResult.error);
       this.operationMessage = this.errorText(cartResult.error);
@@ -165,6 +189,9 @@ export struct MallPage {
     }
     this.cart = cartResult.data;
     const orderResult: NetworkResult<ShopOrderListResponse> = await this.service.listOrders();
+    if (requestVersion !== this.privateRequestVersion) {
+      return;
+    }
     if (!orderResult.successful || orderResult.data === null) {
       this.privateState = this.stateForError(orderResult.error);
       this.operationMessage = this.errorText(orderResult.error);
@@ -173,6 +200,9 @@ export struct MallPage {
     this.orders = orderResult.data.items;
     TravelPersistenceStore.getInstance().saveShopOrders(AuthStore.getInstance().getUserId(), this.orders);
     const accountResult: NetworkResult<PointsAccount> = await this.service.getPointsAccount();
+    if (requestVersion !== this.privateRequestVersion) {
+      return;
+    }
     if (!accountResult.successful || accountResult.data === null) {
       this.privateState = this.stateForError(accountResult.error);
       this.operationMessage = this.errorText(accountResult.error);
@@ -180,10 +210,16 @@ export struct MallPage {
     }
     this.pointsAccount = accountResult.data;
     const ledgerResult: NetworkResult<PointsLedgerResponse> = await this.service.listPointsLedger();
+    if (requestVersion !== this.privateRequestVersion) {
+      return;
+    }
     if (ledgerResult.successful && ledgerResult.data !== null) {
       this.ledger = ledgerResult.data.items;
     }
     const rewardsResult: NetworkResult<PointsRewardListResponse> = await this.service.listRewards();
+    if (requestVersion !== this.privateRequestVersion) {
+      return;
+    }
     if (rewardsResult.successful && rewardsResult.data !== null) {
       this.rewards = rewardsResult.data.items;
       if (this.selectedRewardId.length === 0 && this.rewards.length > 0) {
@@ -200,6 +236,54 @@ export struct MallPage {
       }
     }
     return null;
+  }
+
+  private cartQuantityForProduct(productId: string): number {
+    if (this.cart === null) {
+      return 0;
+    }
+    for (let index: number = 0; index < this.cart.items.length; index++) {
+      if (this.cart.items[index].product_id === productId) {
+        return this.cart.items[index].quantity;
+      }
+    }
+    return 0;
+  }
+
+  private addableQuantity(product: ShopProduct): number {
+    return Math.max(product.stock - this.cartQuantityForProduct(product.id), 0);
+  }
+
+  private productStockLabel(product: ShopProduct): string {
+    const inCart: number = this.cartQuantityForProduct(product.id);
+    if (inCart === 0) {
+      return `可售库存 ${product.stock}`;
+    }
+    return `可售 ${product.stock} · 已加购 ${inCart} · 还可加 ${this.addableQuantity(product)}`;
+  }
+
+  private isStockStateError(error: ApiErrorInfo | null): boolean {
+    if (error === null) {
+      return false;
+    }
+    return error.serverCode === 'INSUFFICIENT_STOCK' || error.serverCode === 'PRODUCT_UNAVAILABLE' ||
+      error.serverCode === 'CART_CONFLICT' || error.serverCode === 'CART_EMPTY' ||
+      error.serverCode === 'SHOP_ORDER_EXPIRED' || error.serverCode === 'SHOP_ORDER_NOT_PAYABLE' ||
+      error.serverCode === 'CHECKOUT_CONFLICT' || error.serverCode === 'PRODUCT_NOT_FOUND' ||
+      error.serverCode === 'CART_ITEM_NOT_FOUND';
+  }
+
+  private async refreshStockContext(): Promise<void> {
+    // 库存冲突意味着目录和购物车至少有一方已过期，两端都重新读取服务端事实。
+    const requestVersion: number = ++this.privateRequestVersion;
+    const cartResult: NetworkResult<ShoppingCart> = await this.service.getCart();
+    if (requestVersion !== this.privateRequestVersion) {
+      return;
+    }
+    if (cartResult.successful && cartResult.data !== null) {
+      this.cart = cartResult.data;
+    }
+    await this.loadProducts();
   }
 
   private replaceOrder(value: ShopOrder): void {
@@ -222,20 +306,27 @@ export struct MallPage {
     if (!this.requireLogin('登录后才能同步购物车') || this.operationBusy) {
       return;
     }
-    const validation: ShopRuleResult = validateCartQuantity(1, product.stock);
+    const nextQuantity: number = this.cartQuantityForProduct(product.id) + 1;
+    const validation: ShopRuleResult = validateCartQuantity(nextQuantity, product.stock);
     if (!validation.valid) {
       this.operationMessage = validation.message;
       return;
     }
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<ShoppingCart> = await this.service.addCartItem(product.id, 1);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.cart = result.data;
+      this.privateState = ContentState.CONTENT;
       this.operationMessage = `${product.name} 已加入服务端购物车`;
     } else {
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (this.isStockStateError(result.error)) {
+        await this.refreshStockContext();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async updateCartItem(item: CartItem, quantity: number): Promise<void> {
@@ -251,30 +342,42 @@ export struct MallPage {
       this.operationMessage = validation.message;
       return;
     }
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<ShoppingCart> = await this.service.updateCartItem(item.id, quantity);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.cart = result.data;
+      this.privateState = ContentState.CONTENT;
       this.operationMessage = '购物车数量已同步';
     } else {
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (this.isStockStateError(result.error)) {
+        await this.refreshStockContext();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async removeCartItem(item: CartItem): Promise<void> {
     if (this.operationBusy) {
       return;
     }
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<ShoppingCart> = await this.service.removeCartItem(item.id);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.cart = result.data;
+      this.privateState = ContentState.CONTENT;
       this.operationMessage = `${item.product_name} 已移出购物车`;
     } else {
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (this.isStockStateError(result.error)) {
+        await this.refreshStockContext();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async checkout(): Promise<void> {
@@ -290,21 +393,28 @@ export struct MallPage {
     const operationId: string = `${this.cart.id}:${this.cart.total_quantity}:${this.cart.total_cents}:` +
       `${this.deliveryName.trim()}:${this.deliveryPhone.trim()}:${this.deliveryAddress.trim()}`;
     const key: string = this.checkoutPending.getOrCreate(operationId, 'shop-checkout');
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<ShopOrder> = await this.service.checkout(
       this.deliveryName.trim(), this.deliveryPhone.trim(), this.deliveryProvince.trim(), this.deliveryCity.trim(),
       this.deliveryAddress.trim(), this.deliveryPostalCode.trim(), key);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.checkoutPending.resolveSuccess();
       this.replaceOrder(result.data);
       this.operationMessage = `订单 ${result.data.order_no} 已创建，等待演示支付`;
       await this.loadPrivateData();
+      // 结算时服务端已经原子预占库存，不等支付；立即刷新目录才能展示真实剩余量。
+      await this.loadProducts();
       this.section = MallSection.ORDERS;
     } else {
       this.resolveFailure(this.checkoutPending, result.error);
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (this.isStockStateError(result.error)) {
+        await this.refreshStockContext();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async payOrder(value: ShopOrder): Promise<void> {
@@ -312,9 +422,9 @@ export struct MallPage {
       return;
     }
     const key: string = this.payPending.getOrCreate(value.id, 'shop-demo-pay');
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<ShopOrder> = await this.service.payOrder(value.id, key);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.payPending.resolveSuccess();
       this.replaceOrder(result.data);
@@ -322,8 +432,15 @@ export struct MallPage {
       await this.loadPrivateData();
     } else {
       this.resolveFailure(this.payPending, result.error);
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (this.isStockStateError(result.error)) {
+        // 支付过期会在服务端同时释放库存；订单、购物车和目录必须作为一个视图刷新。
+        await this.loadPrivateData();
+        await this.loadProducts();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async redeem(): Promise<void> {
@@ -338,6 +455,7 @@ export struct MallPage {
       return;
     }
     const key: string = this.redeemPending.getOrCreate(reward.id, 'points-redeem');
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<PointsRedemption> = await this.service.redeemReward(reward.id, key);
     this.operationBusy = false;
@@ -362,6 +480,7 @@ export struct MallPage {
     }
     const operationId: string = `PRODUCT:${this.shareRefId}:${this.sharePlatform}:${this.shareCaption.trim()}`;
     const key: string = this.sharePending.getOrCreate(operationId, 'content-share');
+    this.privateRequestVersion++;
     this.operationBusy = true;
     const result: NetworkResult<ShareRecord> = await this.service.shareContent(
       'PRODUCT', this.shareRefId, this.sharePlatform, this.shareCaption.trim(), key);
@@ -380,11 +499,16 @@ export struct MallPage {
   @Builder
   private sectionButton(label: string, value: MallSection) {
     Button(label).layoutWeight(1).fontSize(12)
+      .enabled(!this.operationBusy)
       .fontColor(this.section === value ? Color.White : $r('app.color.primary'))
       .backgroundColor(this.section === value ? $r('app.color.primary') : $r('app.color.surface_tint'))
       .onClick(() => {
         this.section = value;
-        if (value !== MallSection.CATALOG && this.loggedIn && this.cart === null) {
+        if (value === MallSection.CATALOG) {
+          // 返回商品页时重新读取余量；GET 同时会释放已经过期的待支付订单库存。
+          this.catalogRequestVersion++;
+          this.loadProducts();
+        } else if (this.loggedIn) {
           this.loadPrivateData();
         }
       })
@@ -408,11 +532,12 @@ export struct MallPage {
             Text(`原价 ${formatMoney(product.price_cents)}`).fontSize(9).fontColor($r('app.color.text_secondary'))
           }
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(`库存 ${product.stock}`).fontSize(10).fontColor(product.stock > 0 ?
+        Text(this.productStockLabel(product)).fontSize(10).fontColor(this.addableQuantity(product) > 0 ?
           $r('app.color.success') : $r('app.color.error'))
       }.width('100%')
       Row({ space: 6 }) {
-        Button(this.operationBusy ? '处理中' : '加入购物车').enabled(!this.operationBusy && product.stock > 0)
+        Button(this.operationBusy ? '处理中' : '加入购物车')
+          .enabled(!this.operationBusy && this.addableQuantity(product) > 0)
           .layoutWeight(1).fontSize(11).fontColor(Color.White).backgroundColor($r('app.color.primary'))
           .onClick(() => { this.addToCart(product); })
         Button('设为分享').layoutWeight(1).fontSize(11).fontColor($r('app.color.primary'))
@@ -467,6 +592,9 @@ export struct MallPage {
               this.selectedCategoryId = category.id; this.loadProducts();
             })
         }, (category: ShopCategory) => category.id)
+        Button('刷新余量').fontSize(11).fontColor($r('app.color.primary'))
+          .backgroundColor($r('app.color.surface_tint')).enabled(this.catalogState !== ContentState.LOADING)
+          .onClick(() => { this.loadProducts(); })
       }
     }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
     if (this.catalogState !== ContentState.CONTENT) {
@@ -475,7 +603,7 @@ export struct MallPage {
     } else {
       Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.SpaceBetween }) {
         ForEach(this.products, (product: ShopProduct) => { this.productCard(product) },
-          (product: ShopProduct) => product.id)
+          (product: ShopProduct) => shopProductRenderKey(product))
       }.width('100%')
     }
   }
@@ -501,7 +629,7 @@ export struct MallPage {
             Button('移除').enabled(!this.operationBusy).fontSize(10).fontColor($r('app.color.error'))
               .onClick(() => { this.removeCartItem(item); })
           }.width('100%').padding(12).borderRadius(14).backgroundColor($r('app.color.surface'))
-        }, (item: CartItem) => item.id)
+        }, (item: CartItem) => cartItemRenderKey(item))
         Column({ space: 7 }) {
           Text(`商品 ${this.cart.total_quantity} 件 · 小计 ${formatMoney(this.cart.subtotal_cents)} · ` +
             `优惠 ${formatMoney(this.cart.discount_cents)} · 应付 ${formatMoney(this.cart.total_cents)}`)
@@ -549,8 +677,13 @@ export struct MallPage {
               .width('100%').fontSize(10).fontColor($r('app.color.text_secondary'))
             Text(`provider=${order.provider}/demo=${order.is_demo} · 未接真实支付/物流`).width('100%')
               .fontSize(9).fontColor($r('app.color.warning'))
+            if (order.status === ShopOrderStatus.PENDING_PAYMENT &&
+              typeof order.expires_at === 'string' && order.expires_at.length > 0) {
+              Text(`库存保留至 ${formatShanghaiDateTime(order.expires_at)}`).width('100%').fontSize(10)
+                .fontColor($r('app.color.warning'))
+            }
             if (order.status === ShopOrderStatus.EXPIRED) {
-              Text(`订单保留已过期${order.expires_at === null ? '' :
+              Text(`订单保留已过期${typeof order.expires_at !== 'string' || order.expires_at.length === 0 ? '' :
                 ` · ${formatShanghaiDateTime(order.expires_at)}`}`)
                 .width('100%').fontSize(10).fontColor($r('app.color.error'))
             }
@@ -559,7 +692,7 @@ export struct MallPage {
                 .fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => { this.payOrder(order); })
             }
           }.width('100%').padding(14).borderRadius(16).backgroundColor($r('app.color.surface'))
-        }, (order: ShopOrder) => order.id)
+        }, (order: ShopOrder) => shopOrderRenderKey(order))
       }
     }
   }
@@ -587,7 +720,7 @@ export struct MallPage {
           }.width(this.isWide ? '31%' : '48%').padding(12).borderRadius(14)
             .backgroundColor(this.selectedRewardId === reward.id ? $r('app.color.primary') : $r('app.color.surface'))
             .onClick(() => { this.selectedRewardId = reward.id; })
-        }, (reward: PointsReward) => reward.id)
+        }, (reward: PointsReward) => pointsRewardRenderKey(reward))
       }.width('100%')
       Button(this.operationBusy ? '兑换中…' : '兑换所选奖励').enabled(!this.operationBusy && this.rewards.length > 0)
         .width('100%').fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => { this.redeem(); })

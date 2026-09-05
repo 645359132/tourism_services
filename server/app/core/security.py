@@ -12,7 +12,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 from app.core.config import Settings
 
-TokenType = Literal["access", "refresh", "ticket_qr"]
+TokenType = Literal["access", "refresh", "ticket_qr", "ticket_quote"]
 
 password_hasher = PasswordHasher(
     time_cost=2,
@@ -126,6 +126,28 @@ def create_ticket_qr(
         },
     )
     return token, expires_at
+
+
+def create_ticket_quote(
+    *,
+    slot_id: UUID,
+    quantity: int,
+    unit_price_cents: int,
+    settings: Settings,
+) -> tuple[str, datetime, str]:
+    """Sign a short-lived price promise without persisting a quote table."""
+
+    return _encode_token(
+        subject=slot_id,
+        token_type="ticket_quote",
+        expires_delta=timedelta(seconds=settings.ticket_quote_ttl_seconds),
+        settings=settings,
+        extra_claims={
+            "purpose": "ticket_purchase",
+            "quantity": quantity,
+            "unit_price_cents": unit_price_cents,
+        },
+    )
 
 
 def decode_token(

@@ -33,10 +33,12 @@ import {
   formatMoney,
   hasRequiredIssuedTickets,
   ticketOrderRenderKey,
+  ticketSlotRenderKey,
   validateTicketQuantity,
   validateVisitDate
 } from '../utils/TicketRules';
 import { formatScenicClock, formatShanghaiDateTime } from '../utils/DateTimeRules';
+import { shanghaiDateAfterDays } from '../utils/BookingRules';
 
 enum TicketPageTab {
   BOOKING = 0,
@@ -49,12 +51,13 @@ export struct TicketPage {
   onBack: () => void = (): void => {};
   onLoginTap: () => void = (): void => {};
   @State tab: TicketPageTab = TicketPageTab.BOOKING;
-  @State contentState: ContentState = ContentState.LOADING;
-  @State errorMessage: string = '';
+  @State bookingState: ContentState = ContentState.LOADING;
+  @State bookingErrorMessage: string = '';
+  @State ordersState: ContentState = ContentState.LOADING;
+  @State ordersErrorMessage: string = '';
   @State ticketTypes: TicketType[] = [];
   @State selectedTypeId: string = '';
-  @State visitDate: string =
-    new Date(Date.now() + (24 + 8) * 60 * 60 * 1000).toISOString().substring(0, 10);
+  @State visitDate: string = shanghaiDateAfterDays(1);
   @State slots: TicketSlot[] = [];
   @State selectedSlotId: string = '';
   @State quantity: number = 1;
@@ -78,6 +81,8 @@ export struct TicketPage {
   private cancelPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private refundPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private reschedulePending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  private slotRequestVersion: number = 0;
+  private orderRequestVersion: number = 0;
 
   aboutToAppear(): void {
     if (this.loggedIn) {
@@ -117,18 +122,28 @@ export struct TicketPage {
     return this.findSlot(this.slots, this.selectedSlotId);
   }
 
+  private clearSlotSelection(message: string = ''): void {
+    // 日期或票种一旦变化，旧场次和报价立即失效。递增版本号还能阻止迟到响应
+    // 把上一日期的场次重新写回页面，避免用户实际买到与输入日期不同的票。
+    this.slotRequestVersion++;
+    this.selectedSlotId = '';
+    this.quote = null;
+    this.slots = [];
+    this.inventoryNotice = message;
+  }
+
   private async loadTypes(): Promise<void> {
-    this.contentState = ContentState.LOADING;
-    this.errorMessage = '';
+    this.bookingState = ContentState.LOADING;
+    this.bookingErrorMessage = '';
     const result: NetworkResult<TicketTypeListResponse> = await this.service.listTypes();
     if (!result.successful || result.data === null) {
-      this.contentState = ContentState.ERROR;
-      this.errorMessage = this.errorText(result.error);
+      this.bookingState = ContentState.ERROR;
+      this.bookingErrorMessage = this.errorText(result.error);
       return;
     }
     this.ticketTypes = result.data.items;
     if (this.ticketTypes.length === 0) {
-      this.contentState = ContentState.EMPTY;
+      this.bookingState = ContentState.EMPTY;
       return;
     }
     if (this.selectedTypeId.length === 0) {
@@ -138,23 +153,41 @@ export struct TicketPage {
   }
 
   private async loadSlots(): Promise<void> {
-    const dateResult: TicketRuleResult = validateVisitDate(this.visitDate);
+    const requestedDate: string = this.visitDate;
+    const requestedTypeId: string = this.selectedTypeId;
+    const dateResult: TicketRuleResult = validateVisitDate(requestedDate);
     if (!dateResult.valid) {
-      this.contentState = ContentState.ERROR;
-      this.errorMessage = dateResult.message;
+      this.bookingState = ContentState.ERROR;
+      this.bookingErrorMessage = dateResult.message;
       return;
     }
-    this.contentState = ContentState.LOADING;
-    this.errorMessage = '';
+    const requestVersion: number = ++this.slotRequestVersion;
+    this.bookingState = ContentState.LOADING;
+    this.bookingErrorMessage = '';
     const priorSelected: TicketSlot | null = this.findSlot(this.slots, this.selectedSlotId);
     const result: NetworkResult<TicketSlotListResponse> =
-      await this.service.listSlots(this.visitDate, this.selectedTypeId);
+      await this.service.listSlots(requestedDate, requestedTypeId);
+    if (requestVersion !== this.slotRequestVersion || this.visitDate !== requestedDate ||
+      this.selectedTypeId !== requestedTypeId) {
+      return;
+    }
     if (!result.successful || result.data === null) {
-      this.contentState = ContentState.ERROR;
-      this.errorMessage = this.errorText(result.error);
+      this.bookingState = ContentState.ERROR;
+      this.bookingErrorMessage = this.errorText(result.error);
       return;
     }
     const updatedSlots: TicketSlot[] = result.data.items;
+    for (let index: number = 0; index < updatedSlots.length; index++) {
+      if (updatedSlots[index].visit_date !== requestedDate ||
+        (requestedTypeId.length > 0 && updatedSlots[index].ticket_type_id !== requestedTypeId)) {
+        this.slots = [];
+        this.selectedSlotId = '';
+        this.quote = null;
+        this.bookingState = ContentState.ERROR;
+        this.bookingErrorMessage = '服务端返回的门票日期或票种与当前查询不一致，请重新查询';
+        return;
+      }
+    }
     const currentSelected: TicketSlot | null = this.findSlot(updatedSlots, this.selectedSlotId);
     if (this.selectedSlotId.length > 0 && currentSelected === null) {
       this.inventoryNotice = '所选时段已不可预约，请重新选择';
@@ -168,7 +201,7 @@ export struct TicketPage {
       }
     }
     this.slots = updatedSlots;
-    this.contentState = this.slots.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
+    this.bookingState = this.slots.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
   }
 
   private async requestQuote(): Promise<void> {
@@ -184,11 +217,31 @@ export struct TicketPage {
     }
     this.operationBusy = true;
     this.operationMessage = '';
-    const result: NetworkResult<TicketQuote> = await this.service.createQuote(slot.id, this.quantity);
+    const requestedSlotId: string = slot.id;
+    const requestedSlotVersion: number = this.slotRequestVersion;
+    const requestedDate: string = this.visitDate;
+    const requestedTypeId: string = this.selectedTypeId;
+    const requestedQuantity: number = this.quantity;
+    const result: NetworkResult<TicketQuote> = await this.service.createQuote(requestedSlotId, requestedQuantity);
     this.operationBusy = false;
+    if (requestedSlotVersion !== this.slotRequestVersion ||
+      this.selectedSlotId !== requestedSlotId || this.visitDate !== requestedDate ||
+      this.selectedTypeId !== requestedTypeId || this.quantity !== requestedQuantity) {
+      this.quote = null;
+      this.operationMessage = '日期、票种、时段或数量已变化，请按当前选择重新报价';
+      return;
+    }
     if (!result.successful || result.data === null) {
       this.quote = null;
       this.operationMessage = this.errorText(result.error);
+      await this.loadSlots();
+      return;
+    }
+    if (result.data.slot_id !== requestedSlotId || result.data.ticket_type_id !== requestedTypeId ||
+      result.data.visit_date !== requestedDate || result.data.start_time !== slot.start_time ||
+      result.data.end_time !== slot.end_time || result.data.quantity !== requestedQuantity) {
+      this.quote = null;
+      this.operationMessage = '报价对应的日期或场次已变化，请刷新后重新选择';
       await this.loadSlots();
       return;
     }
@@ -206,11 +259,20 @@ export struct TicketPage {
       this.operationMessage = '请先选择时段并获取实时价格';
       return;
     }
+    if (slot.visit_date !== this.visitDate || slot.ticket_type_id !== this.selectedTypeId ||
+      this.quote.slot_id !== slot.id || this.quote.visit_date !== this.visitDate ||
+      this.quote.ticket_type_id !== this.selectedTypeId || this.quote.quantity !== this.quantity ||
+      this.quote.quote_token.length === 0) {
+      this.quote = null;
+      this.operationMessage = '日期或时段已变化，请重新选择场次并获取价格';
+      return;
+    }
     this.operationBusy = true;
     this.operationMessage = '';
     const createOperationId: string = `${slot.id}:${this.quantity.toString()}`;
     const createKey: string = this.createPending.getOrCreate(createOperationId, 'ticket-order');
-    const result: NetworkResult<TicketOrder> = await this.service.createOrder(slot.id, this.quantity, createKey);
+    const result: NetworkResult<TicketOrder> =
+      await this.service.createOrder(slot.id, this.quantity, this.quote.quote_token, createKey);
     this.operationBusy = false;
     if (!result.successful || result.data === null) {
       this.resolvePendingFailure(this.createPending, result.error);
@@ -227,28 +289,32 @@ export struct TicketPage {
 
   private async loadOrders(): Promise<void> {
     if (!this.loggedIn) {
-      this.contentState = ContentState.NO_PERMISSION;
+      this.ordersState = ContentState.NO_PERMISSION;
       return;
     }
-    this.contentState = ContentState.LOADING;
+    const requestVersion: number = ++this.orderRequestVersion;
+    this.ordersState = ContentState.LOADING;
     const result: NetworkResult<TicketOrderListResponse> = await this.service.listOrders();
+    if (requestVersion !== this.orderRequestVersion) {
+      return;
+    }
     if (!result.successful || result.data === null) {
       const cached: TicketOrder[] = TravelPersistenceStore.getInstance().loadTicketOrders(
         AuthStore.getInstance().getUserId());
       if (cached.length > 0 && result.error !== null && result.error.code === ApiErrorCode.OFFLINE) {
         this.orders = cached;
-        this.contentState = ContentState.CONTENT;
+        this.ordersState = ContentState.CONTENT;
         this.operationMessage = '网络不可用，正在展示本地缓存订单与电子票';
         return;
       }
-      this.contentState = ContentState.ERROR;
-      this.errorMessage = this.errorText(result.error);
+      this.ordersState = ContentState.ERROR;
+      this.ordersErrorMessage = this.errorText(result.error);
       return;
     }
     this.orders = result.data.items;
     this.reconcileExpandedOrderActions();
     TravelPersistenceStore.getInstance().saveTicketOrders(AuthStore.getInstance().getUserId(), this.orders);
-    this.contentState = this.orders.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
+    this.ordersState = this.orders.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
   }
 
   private replaceOrder(order: TicketOrder): void {
@@ -330,6 +396,7 @@ export struct TicketPage {
     if (result.successful && result.data !== null) {
       this.cancelPending.resolveSuccess();
       this.replaceOrder(result.data);
+      this.clearSlotSelection('订单已取消，原场次余票将在返回购票页时刷新');
       await this.loadOrders();
       this.operationMessage = `订单 ${result.data.order_no} 已取消，余票已释放`;
     } else {
@@ -359,8 +426,9 @@ export struct TicketPage {
       this.refundPending.resolveSuccess();
       this.replaceOrder(result.data);
       this.refundOrderId = '';
+      this.clearSlotSelection('退款已完成，原场次余票将在返回购票页时刷新');
       await this.loadOrders();
-      this.operationMessage = `订单 ${result.data.order_no} 已退款`;
+      this.operationMessage = `订单 ${result.data.order_no} 已退款，原场次余票已恢复`;
     } else {
       this.resolvePendingFailure(this.refundPending, result.error);
       if (result.error !== null && result.error.statusCode === 409) {
@@ -387,6 +455,7 @@ export struct TicketPage {
     if (result.successful && result.data !== null) {
       this.reschedulePending.resolveSuccess();
       this.replaceOrder(result.data);
+      this.clearSlotSelection('改签已完成，相关场次余票将在返回购票页时刷新');
       await this.loadOrders();
       this.operationMessage = `订单 ${result.data.order_no} 已改签到 ${formatScenicClock(result.data.start_time)}`;
     } else {
@@ -467,11 +536,10 @@ export struct TicketPage {
     .justifyContent(FlexAlign.Center)
     .borderRadius(16)
     .backgroundColor(this.selectedTypeId === item.id ? $r('app.color.primary') : $r('app.color.surface'))
+    .enabled(!this.operationBusy)
     .onClick(() => {
       this.selectedTypeId = item.id;
-      this.selectedSlotId = '';
-      this.quote = null;
-      this.inventoryNotice = '';
+      this.clearSlotSelection();
       this.loadSlots();
     })
   }
@@ -480,7 +548,7 @@ export struct TicketPage {
   private slotCard(slot: TicketSlot) {
     Column({ space: 7 }) {
       Row() {
-        Text(`${formatScenicClock(slot.start_time)} - ${formatScenicClock(slot.end_time)}`)
+        Text(`${slot.visit_date}  ${formatScenicClock(slot.start_time)} - ${formatScenicClock(slot.end_time)}`)
           .fontSize(16)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
@@ -514,6 +582,7 @@ export struct TicketPage {
       color: this.selectedSlotId === slot.id ? $r('app.color.primary') : $r('app.color.divider') })
     .backgroundColor($r('app.color.surface'))
     .opacity(slot.remaining > 0 ? 1 : 0.55)
+    .enabled(!this.operationBusy)
     .onClick(() => {
       if (slot.remaining > 0) {
         this.selectedSlotId = slot.id;
@@ -545,13 +614,25 @@ export struct TicketPage {
 
         Row({ space: 10 }) {
           TextInput({ text: this.visitDate, placeholder: 'YYYY-MM-DD' })
+            .enabled(!this.operationBusy)
             .layoutWeight(1)
             .fontColor($r('app.color.text_primary'))
             .backgroundColor($r('app.color.surface'))
             .onChange((value: string) => {
+              if (value === this.visitDate) {
+                return;
+              }
               this.visitDate = value;
+              this.clearSlotSelection('日期已修改，正在查询与该日期绑定的门票场次');
+              if (validateVisitDate(value).valid) {
+                this.loadSlots();
+              } else {
+                this.bookingState = ContentState.EMPTY;
+                this.bookingErrorMessage = '';
+              }
             })
           Button('查询时段')
+            .enabled(!this.operationBusy)
             .fontColor(Color.White)
             .backgroundColor($r('app.color.primary'))
             .onClick(() => {
@@ -559,6 +640,7 @@ export struct TicketPage {
               this.loadSlots();
             })
           Button('刷新库存')
+            .enabled(!this.operationBusy)
             .fontColor($r('app.color.primary'))
             .backgroundColor($r('app.color.surface_tint'))
             .onClick(() => {
@@ -582,11 +664,11 @@ export struct TicketPage {
             .backgroundColor($r('app.color.surface_tint'))
         }
 
-        if (this.contentState === ContentState.LOADING || this.contentState === ContentState.EMPTY ||
-          this.contentState === ContentState.ERROR) {
+        if (this.bookingState === ContentState.LOADING || this.bookingState === ContentState.EMPTY ||
+          this.bookingState === ContentState.ERROR) {
           StatePanel({
-            state: this.contentState,
-            message: this.errorMessage,
+            state: this.bookingState,
+            message: this.bookingErrorMessage,
             onRetry: (): void => {
               this.loadSlots();
             }
@@ -599,14 +681,14 @@ export struct TicketPage {
             .fontColor($r('app.color.text_primary'))
           ForEach(this.slots, (slot: TicketSlot) => {
             this.slotCard(slot)
-          }, (slot: TicketSlot) => slot.id)
+          }, (slot: TicketSlot) => ticketSlotRenderKey(slot))
 
           Row({ space: 12 }) {
             Text('购票数量')
               .fontSize(15)
               .fontColor($r('app.color.text_primary'))
               .layoutWeight(1)
-            Button('−').width(38).height(38).onClick(() => {
+            Button('−').enabled(!this.operationBusy).width(38).height(38).onClick(() => {
               if (this.quantity > 1) {
                 this.quantity -= 1;
                 this.quote = null;
@@ -616,7 +698,7 @@ export struct TicketPage {
               .width(30)
               .textAlign(TextAlign.Center)
               .fontColor($r('app.color.text_primary'))
-            Button('+').width(38).height(38).onClick(() => {
+            Button('+').enabled(!this.operationBusy).width(38).height(38).onClick(() => {
               if (this.quantity < 8) {
                 this.quantity += 1;
                 this.quote = null;
@@ -655,6 +737,11 @@ export struct TicketPage {
                 .width('100%')
                 .fontSize(12)
                 .fontColor($r('app.color.text_secondary'))
+              Text(`适用日期 ${this.quote.visit_date} · ${formatScenicClock(this.quote.start_time)}-` +
+                `${formatScenicClock(this.quote.end_time)}`)
+                .width('100%')
+                .fontSize(12)
+                .fontColor($r('app.color.primary'))
               Text(this.quote.pricing_explanation.join(' · '))
                 .width('100%')
                 .fontSize(12)
@@ -876,10 +963,10 @@ export struct TicketPage {
           Button('立即登录').fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => {
             this.onLoginTap();
           })
-        } else if (this.contentState !== ContentState.CONTENT) {
+        } else if (this.ordersState !== ContentState.CONTENT) {
           StatePanel({
-            state: this.contentState,
-            message: this.errorMessage,
+            state: this.ordersState,
+            message: this.ordersErrorMessage,
             onRetry: (): void => {
               this.loadOrders();
             }
@@ -939,18 +1026,21 @@ export struct TicketPage {
               this.onBack();
             })
           Button('预约购票')
+            .enabled(!this.operationBusy)
             .layoutWeight(1)
             .fontColor(this.tab === TicketPageTab.BOOKING ? Color.White : $r('app.color.primary'))
             .backgroundColor(this.tab === TicketPageTab.BOOKING ? $r('app.color.primary') : $r('app.color.surface_tint'))
             .onClick(() => {
               this.tab = TicketPageTab.BOOKING;
-              if (this.slots.length === 0) {
+              if (this.ticketTypes.length === 0) {
                 this.loadTypes();
               } else {
-                this.contentState = ContentState.CONTENT;
+                // 取消、退款、改签都会改变库存；每次回到购票页都重新读取服务端余票。
+                this.loadSlots();
               }
             })
           Button('我的订单')
+            .enabled(!this.operationBusy)
             .layoutWeight(1)
             .fontColor(this.tab === TicketPageTab.ORDERS ? Color.White : $r('app.color.primary'))
             .backgroundColor(this.tab === TicketPageTab.ORDERS ? $r('app.color.primary') : $r('app.color.surface_tint'))

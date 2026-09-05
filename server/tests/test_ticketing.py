@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -19,6 +19,12 @@ from app.core.config import Settings
 from app.core.errors import AppError
 from app.core.security import hash_password
 from app.db.base import Base
+from app.db.models.marketplace import (
+    InventoryBucket,
+    Reservation,
+    ReservationAllocation,
+    UserScheduleLock,
+)
 from app.db.models.role import Role, UserRole
 from app.db.models.ticketing import (
     TICKET_ISSUED,
@@ -33,7 +39,7 @@ from app.db.models.user import User
 from app.db.session import get_session
 from app.main import create_app
 from app.scripts.seed import DEMO_PASSWORD, seed_database
-from app.services.ticketing import create_ticket_order
+from app.services.ticketing import create_ticket_order, quote_ticket_order
 
 
 @dataclass(slots=True)
@@ -135,12 +141,18 @@ def _create_order(
     quantity: int,
     key: str,
 ):
+    quote = harness.client.post(
+        "/api/v1/ticketing/quotes",
+        json={"slot_id": str(slot_id), "quantity": quantity},
+    )
+    assert quote.status_code == 200, quote.json()
     return harness.client.post(
         "/api/v1/ticketing/orders",
         headers=_bearer(token),
         json={
             "slot_id": str(slot_id),
             "quantity": quantity,
+            "quote_token": quote.json()["quote_token"],
             "idempotency_key": key,
         },
     )
@@ -164,6 +176,228 @@ def test_demo_refund_cutoff_defaults_to_two_hours(
     ticketing_harness: TicketingHarness,
 ) -> None:
     assert ticketing_harness.settings.ticket_refund_cutoff_hours == 2
+
+
+def test_admission_ticket_does_not_conflict_with_an_in_park_reservation(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    """An admission window is an entitlement, not an exclusive calendar activity."""
+
+    async def arrange() -> tuple[UUID, str]:
+        async with ticketing_harness.session_factory() as session:
+            tourist_role = await session.scalar(select(Role).where(Role.name == "tourist"))
+            adult_type = await session.scalar(select(TicketType).where(TicketType.code == "adult"))
+            assert tourist_role is not None and adult_type is not None
+
+            user = User(
+                username="ticket_with_in_park_booking",
+                display_name="Ticket Schedule Tourist",
+                password_hash=hash_password(DEMO_PASSWORD),
+                is_active=True,
+            )
+            session.add(user)
+            await session.flush()
+            session.add_all(
+                [
+                    UserRole(user_id=user.id, role_id=tourist_role.id),
+                    UserScheduleLock(user_id=user.id, version=1),
+                ]
+            )
+
+            visit_date = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=90)
+            slot = TicketSlot(
+                ticket_type_id=adult_type.id,
+                visit_date=visit_date,
+                start_time=time(9, 0),
+                end_time=time(17, 0),
+                is_active=True,
+            )
+            slot.inventory = TicketInventory(capacity=5, reserved=0, sold=0)
+            session.add(slot)
+
+            resource_id = uuid4()
+            starts_at = datetime.combine(
+                visit_date, time(10, 0), ZoneInfo("Asia/Shanghai")
+            ).astimezone(UTC)
+            ends_at = datetime.combine(
+                visit_date, time(11, 0), ZoneInfo("Asia/Shanghai")
+            ).astimezone(UTC)
+            bucket = InventoryBucket(
+                resource_type="EXPERIENCE_SESSION",
+                resource_id=resource_id,
+                business_date=visit_date,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                capacity=5,
+                held=0,
+                confirmed=1,
+            )
+            session.add(bucket)
+            await session.flush()
+            reservation = Reservation(
+                booking_no=f"RSV-TICKET-{uuid4().hex[:12]}",
+                user_id=user.id,
+                kind="EXPERIENCE",
+                resource_type="EXPERIENCE_SESSION",
+                resource_id=resource_id,
+                resource_name="In-park performance",
+                starts_at=starts_at,
+                ends_at=ends_at,
+                party_size=1,
+                quantity=1,
+                total_cents=0,
+                status="CONFIRMED",
+                provider="demo",
+                is_demo=True,
+                idempotency_key="ticket-in-park-reservation",
+                request_hash="a" * 64,
+                hold_expires_at=ends_at,
+            )
+            reservation.allocations.append(
+                ReservationAllocation(
+                    bucket_id=bucket.id,
+                    business_date=visit_date,
+                    starts_at=starts_at,
+                    ends_at=ends_at,
+                    quantity=1,
+                    status="CONFIRMED",
+                )
+            )
+            session.add(reservation)
+            await session.commit()
+            return slot.id, visit_date.isoformat()
+
+    slot_id, visit_date = asyncio.run(arrange())
+    token = _login(ticketing_harness.client, "ticket_with_in_park_booking")["access_token"]
+    created = _create_order(
+        ticketing_harness,
+        token=token,
+        slot_id=slot_id,
+        quantity=1,
+        key="ticket-with-in-park-booking-001",
+    )
+
+    assert created.status_code == 201, created.json()
+    assert created.json()["visit_date"] == visit_date
+
+
+def test_quote_exposes_the_authoritative_slot_date_and_window(
+    ticketing_harness: TicketingHarness,
+) -> None:
+    async def create_dated_slot() -> tuple[UUID, str, str]:
+        async with ticketing_harness.session_factory() as session:
+            child_type = await session.scalar(select(TicketType).where(TicketType.code == "child"))
+            assert child_type is not None
+            visit_date = datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=91)
+            slot = TicketSlot(
+                ticket_type_id=child_type.id,
+                visit_date=visit_date,
+                start_time=time(13, 30),
+                end_time=time(16, 0),
+                is_active=True,
+            )
+            slot.inventory = TicketInventory(capacity=8, reserved=0, sold=0)
+            session.add(slot)
+            await session.commit()
+            return slot.id, str(child_type.id), visit_date.isoformat()
+
+    slot_id, ticket_type_id, visit_date = asyncio.run(create_dated_slot())
+    quote = ticketing_harness.client.post(
+        "/api/v1/ticketing/quotes",
+        json={"slot_id": str(slot_id), "quantity": 2},
+    )
+
+    assert quote.status_code == 200
+    assert quote.json()["ticket_type_id"] == ticket_type_id
+    assert quote.json()["visit_date"] == visit_date
+    assert quote.json()["start_time"] == "13:30:00"
+    assert quote.json()["end_time"] == "16:00:00"
+    assert isinstance(quote.json()["quote_token"], str)
+    assert len(quote.json()["quote_token"]) > 32
+
+    token = _login(ticketing_harness.client, "tourist_two")["access_token"]
+    mismatch = ticketing_harness.client.post(
+        "/api/v1/ticketing/orders",
+        headers=_bearer(token),
+        json={
+            "slot_id": str(slot_id),
+            "quantity": 1,
+            "quote_token": quote.json()["quote_token"],
+            "idempotency_key": "signed-quote-mismatch-001",
+        },
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.json()["error"]["code"] == "QUOTE_MISMATCH"
+
+    quoted_unit_price = quote.json()["unit_price_cents"]
+
+    async def change_catalog_price_after_quote() -> int:
+        async with ticketing_harness.session_factory() as session:
+            ticket_type = await session.get(TicketType, UUID(ticket_type_id))
+            assert ticket_type is not None
+            original_base_price = ticket_type.base_price_cents
+            ticket_type.base_price_cents += 5_000
+            await session.commit()
+            return original_base_price
+
+    original_base_price = asyncio.run(change_catalog_price_after_quote())
+    created = ticketing_harness.client.post(
+        "/api/v1/ticketing/orders",
+        headers=_bearer(token),
+        json={
+            "slot_id": str(slot_id),
+            "quantity": 2,
+            "quote_token": quote.json()["quote_token"],
+            "idempotency_key": "signed-quote-price-promise-001",
+        },
+    )
+    assert created.status_code == 201, created.json()
+    assert created.json()["unit_price_cents"] == quoted_unit_price
+
+    async def restore_catalog_price() -> None:
+        async with ticketing_harness.session_factory() as session:
+            ticket_type = await session.get(TicketType, UUID(ticket_type_id))
+            assert ticket_type is not None
+            ticket_type.base_price_cents = original_base_price
+            await session.commit()
+
+    asyncio.run(restore_catalog_price())
+
+    invalid = ticketing_harness.client.post(
+        "/api/v1/ticketing/orders",
+        headers=_bearer(token),
+        json={
+            "slot_id": str(slot_id),
+            "quantity": 1,
+            "quote_token": "x" * 40,
+            "idempotency_key": "signed-quote-invalid-001",
+        },
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "INVALID_QUOTE"
+
+    original_ttl = ticketing_harness.settings.ticket_quote_ttl_seconds
+    ticketing_harness.settings.ticket_quote_ttl_seconds = -1
+    try:
+        expired_quote = ticketing_harness.client.post(
+            "/api/v1/ticketing/quotes",
+            json={"slot_id": str(slot_id), "quantity": 1},
+        )
+    finally:
+        ticketing_harness.settings.ticket_quote_ttl_seconds = original_ttl
+    assert expired_quote.status_code == 200
+    expired = ticketing_harness.client.post(
+        "/api/v1/ticketing/orders",
+        headers=_bearer(token),
+        json={
+            "slot_id": str(slot_id),
+            "quantity": 1,
+            "quote_token": expired_quote.json()["quote_token"],
+            "idempotency_key": "signed-quote-expired-001",
+        },
+    )
+    assert expired.status_code == 409
+    assert expired.json()["error"]["code"] == "QUOTE_EXPIRED"
 
 
 def test_order_response_exposes_runtime_refund_policy(
@@ -275,12 +509,18 @@ def test_client_amount_is_forbidden_and_cannot_change_server_price(
     ticketing_harness: TicketingHarness,
 ) -> None:
     token = _login(ticketing_harness.client, "tourist_demo")["access_token"]
+    quote = ticketing_harness.client.post(
+        "/api/v1/ticketing/quotes",
+        json={"slot_id": str(ticketing_harness.gate_slot_id), "quantity": 1},
+    )
+    assert quote.status_code == 200
     response = ticketing_harness.client.post(
         "/api/v1/ticketing/orders",
         headers=_bearer(token),
         json={
             "slot_id": str(ticketing_harness.gate_slot_id),
             "quantity": 1,
+            "quote_token": quote.json()["quote_token"],
             "idempotency_key": "amount-forbid-001",
             "total_cents": 1,
         },
@@ -323,11 +563,18 @@ def test_capacity_one_concurrent_orders_never_oversell(
                 user = await session.get(User, user_id)
                 assert user is not None
                 try:
+                    quote = await quote_ticket_order(
+                        session,
+                        slot_id=slot_id,
+                        quantity=1,
+                        settings=ticketing_harness.settings,
+                    )
                     order = await create_ticket_order(
                         session,
                         user=user,
                         slot_id=slot_id,
                         quantity=1,
+                        quote_token=quote.quote_token,
                         idempotency_key=key,
                         settings=ticketing_harness.settings,
                     )
@@ -494,6 +741,14 @@ def test_refund_voids_tickets_and_replenishes_sold_inventory(
             return slot.id
 
     slot_id = asyncio.run(far_future_child_slot())
+
+    async def inventory_ledger() -> tuple[int, int, int]:
+        async with ticketing_harness.session_factory() as session:
+            inventory = await session.get(TicketInventory, slot_id)
+            assert inventory is not None
+            return inventory.capacity, inventory.reserved, inventory.sold
+
+    ledger_before_purchase = asyncio.run(inventory_ledger())
     created = _create_order(
         ticketing_harness,
         token=token,
@@ -508,6 +763,8 @@ def test_refund_voids_tickets_and_replenishes_sold_inventory(
         key="refund-payment-001",
     )
     assert paid.status_code == 200
+    capacity, reserved_before, sold_before = ledger_before_purchase
+    assert asyncio.run(inventory_ledger()) == (capacity, reserved_before, sold_before + 2)
 
     refunded = ticketing_harness.client.post(
         f"/api/v1/ticketing/orders/{created.json()['id']}/refund",
@@ -519,19 +776,20 @@ def test_refund_voids_tickets_and_replenishes_sold_inventory(
         headers=_bearer(token),
         json={"reason": "Travel plans changed", "idempotency_key": "refund-request-001"},
     )
+    different_key_replay = ticketing_harness.client.post(
+        f"/api/v1/ticketing/orders/{created.json()['id']}/refund",
+        headers=_bearer(token),
+        json={"reason": "Travel plans changed", "idempotency_key": "refund-request-002"},
+    )
 
     assert refunded.status_code == 200
     assert refunded.json()["status"] == "REFUNDED"
     assert {ticket["status"] for ticket in refunded.json()["tickets"]} == {"VOID"}
     assert replay.status_code == 200
-
-    async def sold_count() -> int:
-        async with ticketing_harness.session_factory() as session:
-            inventory = await session.get(TicketInventory, slot_id)
-            assert inventory is not None
-            return inventory.sold
-
-    assert asyncio.run(sold_count()) == 0
+    assert different_key_replay.status_code == 409
+    assert different_key_replay.json()["error"]["code"] == "ORDER_NOT_REFUNDABLE"
+    # remaining = capacity - reserved - sold。退款只回补 sold; 重复请求不得二次回补。
+    assert asyncio.run(inventory_ledger()) == ledger_before_purchase
 
 
 def test_pending_order_can_be_cancelled_idempotently_and_releases_reserved_inventory(

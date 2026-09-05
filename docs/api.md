@@ -192,8 +192,8 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 |---|---|---|---|
 | GET | `/api/v1/ticketing/types` | Public | 票种目录 |
 | GET | `/api/v1/ticketing/slots` | Public | 按 `visit_date` 和可选 `ticket_type_id` 查询场次库存与动态价格 |
-| POST | `/api/v1/ticketing/quotes` | Public | 为场次和数量生成限时报价 |
-| POST | `/api/v1/ticketing/orders` | Bearer / tourist | 幂等占用库存并创建待支付订单 |
+| POST | `/api/v1/ticketing/quotes` | Public | 为场次和数量生成限时报价；响应回传权威票种、日期、起止时间及签名 `quote_token` |
+| POST | `/api/v1/ticketing/orders` | Bearer / tourist | 携带 `quote_token` 幂等占用库存并按签名价格创建待支付订单 |
 | GET | `/api/v1/ticketing/orders` | Bearer / tourist | 分页列出自己的门票订单 |
 | GET | `/api/v1/ticketing/orders/{order_id}` | Bearer / tourist | 获取自己的门票订单 |
 | POST | `/api/v1/ticketing/orders/{order_id}/pay` | Bearer / tourist | 幂等演示支付并签发电子票 |
@@ -207,6 +207,19 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 `TicketOrderResponse` 对所有订单统一返回 `refund_cutoff_hours`、
 `refund_deadline_at`（UTC）和 `refundable`。客户端应以这些服务端字段展示退票规则与
 按钮状态，不能把默认的 2 小时写死；运维覆盖 `TICKET_REFUND_CUTOFF_HOURS` 后契约会同步变化。
+退款事务将电子票置为 `VOID`、订单置为 `REFUNDED`，并在同一事务把
+`TicketInventory.sold` 减去订单数量，因此 `remaining = capacity - reserved - sold`
+会精确恢复；幂等重放不会重复增加余票。
+
+`quote_token` 将场次、数量、单价和有效期写入服务端签名 JWT。首次下单必须携带该
+令牌；在有效期内即使动态占用率变化，也按签名单价创建订单，库存不足仍会拒绝。
+令牌过期、被篡改或与请求不一致分别返回 `QUOTE_EXPIRED`、`INVALID_QUOTE`、
+`QUOTE_MISMATCH`。幂等摘要只使用场次与数量，因此首次响应丢失后重新报价并沿用
+原幂等键，会返回已经创建的订单而不会重复占库存。
+
+普通门票时段是可入园窗口，不是独占游客时间的活动。购买或改签门票不会与园内演出、
+项目或餐饮预约互斥，也不会在行程中生成占满整个窗口的 `COMMITMENT`。真正定时占座的
+票务能力应在未来以明确业务类型接入。
 
 人脸演示请求只接受 `sample=OWNER|OTHER` 与 `consent=true`。响应始终携带
 `provider=demo_face_gate`、`is_demo=true`、`biometric_processed=false`、
@@ -236,7 +249,7 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 |---|---|---|---|
 | GET | `/api/v1/experiences` | Public | 游乐项目/演出目录 |
 | GET | `/api/v1/experiences/{experience_id}/sessions` | Public | 按 `date` 查询项目场次和库存 |
-| POST | `/api/v1/reservations` | Bearer / tourist | 幂等创建项目预约 hold |
+| POST | `/api/v1/reservations` | Bearer / tourist | 幂等创建项目预约 hold；只拒绝真实时间重叠，首尾相接可预约 |
 | GET | `/api/v1/reservations` | Bearer / tourist | 分页列出自己的全部预约 |
 | POST | `/api/v1/reservations/{reservation_id}/confirm` | Bearer / tourist | 幂等确认自己的预约 |
 | POST | `/api/v1/reservations/{reservation_id}/cancel` | Bearer / tourist | 幂等取消自己的预约 |
@@ -274,6 +287,10 @@ Redis rate-limit 后跨 worker 共享。请求期 Redis 调用失败并允许回
 | GET | `/api/v1/points/rewards` | Public | 演示兑换品目录 |
 | POST | `/api/v1/points/redeem` | Bearer / tourist | 幂等兑换积分奖励 |
 | POST | `/api/v1/shares` | Bearer / tourist | 演示验证内容分享并幂等奖励积分 |
+
+商城商品的 `stock` 是服务端权威可售余量。加入购物车不预占库存；结算使用条件更新
+原子扣减库存并创建 `PENDING_PAYMENT` 订单，`ShopOrderResponse.expires_at`（UTC）
+表示库存保留截止。支付不会再次扣减；待支付订单过期后只回补一次。
 
 ### 反馈、同行协作与客服
 

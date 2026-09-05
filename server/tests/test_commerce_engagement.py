@@ -220,8 +220,15 @@ def test_server_authoritative_cart_checkout_payment_and_point_source_uniqueness(
     )
     assert checkout.status_code == 201, checkout.json()
     order = checkout.json()
+    assert datetime.fromisoformat(order["expires_at"]).utcoffset() == timedelta(0)
     assert order["items"][0]["unit_price_cents"] == authoritative
     assert order["subtotal_cents"] == authoritative
+    refreshed_products = cp7_harness.client.get("/api/v1/shop/products")
+    assert refreshed_products.status_code == 200
+    refreshed_product = next(
+        item for item in refreshed_products.json()["items"] if item["id"] == product["id"]
+    )
+    assert refreshed_product["stock"] == product["stock"] - 1
     paid = cp7_harness.client.post(
         f"/api/v1/shop/orders/{order['id']}/pay",
         headers=_bearer(token),
@@ -229,6 +236,12 @@ def test_server_authoritative_cart_checkout_payment_and_point_source_uniqueness(
     )
     assert paid.status_code == 200, paid.json()
     assert paid.json()["status"] == "PAID"
+    paid_products = cp7_harness.client.get("/api/v1/shop/products")
+    paid_product = next(
+        item for item in paid_products.json()["items"] if item["id"] == product["id"]
+    )
+    # 库存语义: 结算时预占; 支付只确认订单, 不能再次扣减.
+    assert paid_product["stock"] == refreshed_product["stock"]
     replay = cp7_harness.client.post(
         f"/api/v1/shop/orders/{order['id']}/pay",
         headers=_bearer(token),

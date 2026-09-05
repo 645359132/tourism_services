@@ -224,11 +224,24 @@ class TourismUser(HttpUser):
             predicate=lambda item: int(item.get("remaining", 0)) > 0,
         )
         with self.client.post(
+            "/api/v1/ticketing/quotes",
+            json={"slot_id": slot["id"], "quantity": 1},
+            name="POST /api/v1/ticketing/quotes",
+            catch_response=True,
+        ) as quote_response:
+            if quote_response.status_code != 200:
+                quote_response.failure(f"ticket quote returned HTTP {quote_response.status_code}")
+                return
+            quote_payload = self._json(quote_response, required_key="quote_token")
+        if quote_payload is None:
+            return
+        with self.client.post(
             "/api/v1/ticketing/orders",
             headers=self.auth_headers,
             json={
                 "slot_id": slot["id"],
                 "quantity": 1,
+                "quote_token": quote_payload["quote_token"],
                 "idempotency_key": self._key("ticket"),
             },
             name="POST /api/v1/ticketing/orders",

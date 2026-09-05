@@ -31,12 +31,6 @@ from app.db.models.marketplace import (
     ReservationAllocation,
     UserScheduleLock,
 )
-from app.db.models.ticketing import (
-    ORDER_PAID,
-    ORDER_PENDING_PAYMENT,
-    TicketOrder,
-    TicketOrderItem,
-)
 from app.db.models.user import User
 from app.schemas.marketplace import (
     ExperienceResponse,
@@ -71,6 +65,8 @@ def _hash_payload(payload: dict[str, object]) -> str:
 
 
 def _scenic_datetime(day: date, clock: time) -> datetime:
+    """Convert one scenic-local wall clock into the UTC transaction timeline."""
+
     return datetime.combine(day, clock, tzinfo=SCENIC_TIMEZONE).astimezone(UTC)
 
 
@@ -381,67 +377,16 @@ async def _check_schedule_conflict(
     user_id: UUID,
     starts_at: datetime,
     ends_at: datetime,
-    buffer_minutes: int,
 ) -> None:
+    # 下单阶段只拒绝真实时间重叠。步行缓冲是行程规划层的可行性建议,
+    # 不能把两个首尾相接或有短间隔的有效场次变成不可购买状态。
     await check_marketplace_schedule_conflict(
         session,
         user_id=user_id,
         starts_at=starts_at,
         ends_at=ends_at,
-        buffer_minutes=buffer_minutes,
+        buffer_minutes=0,
     )
-    await check_ticket_schedule_conflict(
-        session,
-        user_id=user_id,
-        starts_at=starts_at,
-        ends_at=ends_at,
-        buffer_minutes=buffer_minutes,
-    )
-
-
-async def check_ticket_schedule_conflict(
-    session: AsyncSession,
-    *,
-    user_id: UUID,
-    starts_at: datetime,
-    ends_at: datetime,
-    buffer_minutes: int,
-    exclude_order_id: UUID | None = None,
-) -> None:
-    starts_at = _aware(starts_at)
-    ends_at = _aware(ends_at)
-    statement = (
-        select(TicketOrder)
-        .options(selectinload(TicketOrder.items).selectinload(TicketOrderItem.slot))
-        .where(
-            TicketOrder.user_id == user_id,
-            TicketOrder.status.in_((ORDER_PENDING_PAYMENT, ORDER_PAID)),
-        )
-    )
-    if exclude_order_id is not None:
-        statement = statement.where(TicketOrder.id != exclude_order_id)
-    orders = list(await session.scalars(statement))
-    now = datetime.now(UTC)
-    for order in orders:
-        if order.status == ORDER_PENDING_PAYMENT and _aware(order.expires_at) <= now:
-            continue
-        for item in order.items:
-            slot_start = _scenic_datetime(item.slot.visit_date, item.slot.start_time)
-            slot_end = _scenic_datetime(item.slot.visit_date, item.slot.end_time)
-            if item.slot.end_time <= item.slot.start_time:
-                slot_end += timedelta(days=1)
-            if _overlaps(
-                starts_at,
-                ends_at,
-                slot_start,
-                slot_end,
-                buffer_minutes=buffer_minutes,
-            ):
-                raise _error(
-                    409,
-                    "SCHEDULE_CONFLICT",
-                    "Reservation conflicts with an active ticket booking",
-                )
 
 
 async def _check_lodging_conflict(
@@ -499,7 +444,6 @@ async def _check_allocation_conflicts(
     *,
     user_id: UUID,
     specs: list[AllocationSpec],
-    buffer_minutes: int,
 ) -> None:
     room_specs = [spec for spec in specs if spec.bucket.resource_type == "ROOM"]
     timed_specs = [spec for spec in specs if spec.bucket.resource_type != "ROOM"]
@@ -517,14 +461,12 @@ async def _check_allocation_conflicts(
             user_id=user_id,
             starts_at=lodging_start,
             ends_at=min(lodging_start + timedelta(minutes=30), lodging_end),
-            buffer_minutes=buffer_minutes,
         )
         await _check_schedule_conflict(
             session,
             user_id=user_id,
             starts_at=max(lodging_start, lodging_end - timedelta(minutes=30)),
             ends_at=lodging_end,
-            buffer_minutes=buffer_minutes,
         )
     for spec in timed_specs:
         await _check_schedule_conflict(
@@ -532,7 +474,6 @@ async def _check_allocation_conflicts(
             user_id=user_id,
             starts_at=spec.bucket.starts_at,
             ends_at=spec.bucket.ends_at,
-            buffer_minutes=buffer_minutes,
         )
 
 
@@ -618,7 +559,6 @@ async def create_reservation_from_allocations(
         session,
         user_id=actor_id,
         specs=specs,
-        buffer_minutes=settings.reservation_walking_buffer_minutes,
     )
     await _allocate_held(session, specs)
     reservation_id = uuid4()

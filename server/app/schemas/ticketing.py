@@ -50,10 +50,15 @@ class QuoteRequest(BaseModel):
 class QuoteResponse(BaseModel):
     id: str
     slot_id: str
+    ticket_type_id: str
+    visit_date: date
+    start_time: time
+    end_time: time
     quantity: int
     unit_price_cents: int
     total_cents: int
     expires_at: datetime
+    quote_token: str
     pricing_explanation: list[str]
 
 
@@ -62,6 +67,7 @@ class CreateOrderRequest(BaseModel):
 
     slot_id: UUID
     quantity: int = Field(ge=1, le=20)
+    quote_token: str = Field(min_length=32, max_length=4096)
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 

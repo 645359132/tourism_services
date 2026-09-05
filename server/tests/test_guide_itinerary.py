@@ -175,12 +175,18 @@ def _purchase_ticket(
     key_prefix: str,
 ) -> TicketSlot:
     slot = asyncio.run(_ticket_slot(harness.session_factory, date_index=date_index))
+    quote = harness.client.post(
+        "/api/v1/ticketing/quotes",
+        json={"slot_id": str(slot.id), "quantity": 1},
+    )
+    assert quote.status_code == 200
     created = harness.client.post(
         "/api/v1/ticketing/orders",
         headers=_bearer(token),
         json={
             "slot_id": str(slot.id),
             "quantity": 1,
+            "quote_token": quote.json()["quote_token"],
             "idempotency_key": f"{key_prefix}-create",
         },
     )
@@ -388,43 +394,80 @@ def test_rules_planner_is_deterministic_and_owned(guide_harness: GuideHarness) -
     assert hidden_replan.status_code == 404
 
 
-def test_ticket_commitment_and_walking_buffer_conflict(guide_harness: GuideHarness) -> None:
+def test_admission_ticket_is_not_exclusive_and_walking_buffer_still_applies(
+    guide_harness: GuideHarness,
+) -> None:
     token = _login(guide_harness.client, "tourist_demo")
-    slot = _purchase_ticket(
-        guide_harness,
-        token=token,
-        date_index=0,
-        key_prefix="guide-buffer-ticket",
-    )
+    slot = asyncio.run(_ticket_slot(guide_harness.session_factory, date_index=0))
     generated = guide_harness.client.post(
         "/api/v1/itineraries/generate",
         headers=_bearer(token),
         json=_generate_payload(slot.visit_date.isoformat()),
     )
     assert generated.status_code == 200
-    commitment = next(item for item in generated.json()["items"] if item["kind"] == "COMMITMENT")
-    assert commitment["locked"] is True
+    assert generated.json()["items"]
+    assert all(item["kind"] != "COMMITMENT" for item in generated.json()["items"])
+    assert all(item["locked"] is False for item in generated.json()["items"])
+    # 覆盖“先生成行程、后购买同日门票”: 冲突检查也不能把新门票当成独占活动。
+    _purchase_ticket(
+        guide_harness,
+        token=token,
+        date_index=0,
+        key_prefix="guide-buffer-ticket",
+    )
 
-    async def force_short_buffer() -> None:
+    async def force_short_buffer_and_add_legacy_ticket_item() -> None:
         async with guide_harness.session_factory() as session:
             itinerary = await session.get(Itinerary, UUID(generated.json()["id"]))
             assert itinerary is not None
-            items = list(
+            items = sorted(
                 await session.scalars(
                     select(ItineraryItem).where(ItineraryItem.itinerary_id == itinerary.id)
+                ),
+                key=lambda item: item.start_at,
+            )
+            assert len(items) >= 2
+            previous, movable = items[:2]
+            duration = movable.end_at - movable.start_at
+            previous_end = previous.end_at
+            if previous_end.tzinfo is None:
+                previous_end = previous_end.replace(tzinfo=UTC)
+            movable.start_at = previous_end + timedelta(minutes=5)
+            movable.end_at = movable.start_at + duration
+            # 模拟升级前已经保存的普通门票 COMMITMENT。新版本应隐藏、忽略并在重排时清理。
+            scenic_start = datetime.combine(
+                itinerary.visit_date,
+                time(8),
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ).astimezone(UTC)
+            session.add(
+                ItineraryItem(
+                    itinerary_id=itinerary.id,
+                    ordinal=max(item.ordinal for item in items) + 1,
+                    kind="COMMITMENT",
+                    ref_type="ticket_order",
+                    ref_id=uuid4(),
+                    attraction_id=None,
+                    node_id=None,
+                    title="旧版普通入园票承诺",
+                    start_at=scenic_start,
+                    end_at=scenic_start + timedelta(hours=10),
+                    locked=True,
+                    crowd_level="LOW",
+                    walk_minutes=0,
+                    explanation=["旧版数据"],
                 )
             )
-            locked = next(item for item in items if item.locked)
-            movable = next(item for item in items if not item.locked)
-            duration = movable.end_at - movable.start_at
-            locked_end = locked.end_at
-            if locked_end.tzinfo is None:
-                locked_end = locked_end.replace(tzinfo=UTC)
-            movable.start_at = locked_end + timedelta(minutes=5)
-            movable.end_at = movable.start_at + duration
             await session.commit()
 
-    asyncio.run(force_short_buffer())
+    asyncio.run(force_short_buffer_and_add_legacy_ticket_item())
+    detail = guide_harness.client.get(
+        f"/api/v1/itineraries/{generated.json()['id']}",
+        headers=_bearer(token),
+    )
+    assert detail.status_code == 200
+    assert all(item["kind"] != "COMMITMENT" for item in detail.json()["items"])
+
     conflicts = guide_harness.client.post(
         f"/api/v1/itineraries/{generated.json()['id']}/conflicts/check",
         headers=_bearer(token),
@@ -433,14 +476,39 @@ def test_ticket_commitment_and_walking_buffer_conflict(guide_harness: GuideHarne
     assert conflicts.status_code == 200
     assert conflicts.json()["feasible"] is False
     assert "WALK_BUFFER" in {item["code"] for item in conflicts.json()["conflicts"]}
-    assert all(
-        suggestion["item_id"] != commitment["id"]
-        for suggestion in conflicts.json()["suggestions"]
-        if suggestion["item_id"] is not None
+    assert "TICKET_OVERLAP" not in {item["code"] for item in conflicts.json()["conflicts"]}
+
+    replanned = guide_harness.client.post(
+        f"/api/v1/itineraries/{generated.json()['id']}/replan",
+        headers=_bearer(token),
+        json={
+            "crowd_avoidance": True,
+            "preserve_locked": True,
+            "expected_revision": generated.json()["revision"],
+        },
     )
+    assert replanned.status_code == 200, replanned.json()
+    assert all(item["kind"] != "COMMITMENT" for item in replanned.json()["items"])
+
+    async def legacy_count() -> int:
+        async with guide_harness.session_factory() as session:
+            return int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ItineraryItem)
+                    .where(
+                        ItineraryItem.itinerary_id == UUID(generated.json()["id"]),
+                        ItineraryItem.kind == "COMMITMENT",
+                        ItineraryItem.ref_type == "ticket_order",
+                    )
+                )
+                or 0
+            )
+
+    assert asyncio.run(legacy_count()) == 0
 
 
-def test_high_crowd_replan_preserves_locked_and_remains_feasible(
+def test_high_crowd_replan_with_admission_ticket_remains_feasible(
     guide_harness: GuideHarness,
 ) -> None:
     token = _login(guide_harness.client, "guide_tourist_two")
@@ -456,8 +524,8 @@ def test_high_crowd_replan_preserves_locked_and_remains_feasible(
         json=_generate_payload(slot.visit_date.isoformat()),
     )
     assert generated.status_code == 200
-    locked_before = next(item for item in generated.json()["items"] if item["locked"])
-    unlocked_before = [item for item in generated.json()["items"] if not item["locked"]]
+    assert all(item["kind"] != "COMMITMENT" for item in generated.json()["items"])
+    unlocked_before = generated.json()["items"]
     assert len(unlocked_before) >= 2
     high_ref_id = UUID(unlocked_before[0]["ref_id"])
 
@@ -494,11 +562,8 @@ def test_high_crowd_replan_preserves_locked_and_remains_feasible(
     )
     assert replanned.status_code == 200
     assert replanned.json()["revision"] == 2
-    locked_after = next(item for item in replanned.json()["items"] if item["locked"])
-    assert {key: locked_after[key] for key in ("id", "ref_id", "start_at", "end_at", "locked")} == {
-        key: locked_before[key] for key in ("id", "ref_id", "start_at", "end_at", "locked")
-    }
-    unlocked_after = [item for item in replanned.json()["items"] if not item["locked"]]
+    assert all(item["kind"] != "COMMITMENT" for item in replanned.json()["items"])
+    unlocked_after = replanned.json()["items"]
     assert [item["ref_id"] for item in unlocked_after].index(str(high_ref_id)) > 0
 
     conflict_check = guide_harness.client.post(

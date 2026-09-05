@@ -116,6 +116,7 @@ async def create_order(
             user=current_user,
             slot_id=payload.slot_id,
             quantity=payload.quantity,
+            quote_token=payload.quote_token,
             idempotency_key=payload.idempotency_key,
             settings=request.app.state.settings,
         )
@@ -275,7 +276,6 @@ async def reschedule_order(
             user=current_user,
             target_slot_id=payload.target_slot_id,
             idempotency_key=payload.idempotency_key,
-            walking_buffer_minutes=request.app.state.settings.reservation_walking_buffer_minutes,
         )
     return order_response(
         order,

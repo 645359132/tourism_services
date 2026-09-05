@@ -162,6 +162,7 @@ class ShopOrderResponse(BaseModel):
     is_demo: bool = True
     created_at: datetime
     paid_at: datetime | None
+    expires_at: datetime | None
 
 
 class ShopOrderListResponse(PaginatedResponse):

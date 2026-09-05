@@ -70,6 +70,7 @@ import { globalContentExtent, globalContentScale } from '../main/ets/utils/Acces
 import { WindowSizeClass, classifyWindowWidth, isWideWindow } from '../main/ets/utils/ResponsiveRules';
 import {
   detectSessionInventoryChange,
+  experienceSessionRenderKey,
   hasActiveStayConflict,
   hasReservationConflict,
   isCurrentAvailableTimedBucket,
@@ -93,6 +94,7 @@ import {
   findTimelineConflict,
   itineraryActionLabel,
   itineraryCrowdLabel,
+  itineraryItemRenderKey,
   itineraryKindLabel,
   itinerarySeverityLabel,
   localizeItineraryText,
@@ -101,7 +103,8 @@ import {
   plannedRouteStepLabel,
   parseCrowdEnvelope,
   shouldAcceptCrowdSequence,
-  validateItineraryGenerateInput
+  validateItineraryGenerateInput,
+  visibleItineraryItems
 } from '../main/ets/utils/GuideRules';
 import {
   TicketOrderAction,
@@ -112,13 +115,18 @@ import {
   hasRequiredIssuedTickets,
   normalizeCachedTicketOrders,
   ticketOrderRenderKey,
+  ticketSlotRenderKey,
   transitionTicketOrderStatus,
   validateTicketQuantity,
   validateVisitDate
 } from '../main/ets/utils/TicketRules';
 import {
   canPayShopOrder,
+  cartItemRenderKey,
   effectiveProductPrice,
+  pointsRewardRenderKey,
+  shopOrderRenderKey,
+  shopProductRenderKey,
   validateCartQuantity,
   validateCheckout,
   validateRewardRedemption,
@@ -168,6 +176,14 @@ export default function tourismBusinessRulesTest() {
         '{"error":{"code":"RESERVATION_NOT_CONFIRMABLE","message":"Reservation is not confirmable"}}', false);
       const unavailableInventory: ApiErrorInfo = mapApiError(409,
         '{"error":{"code":"INVENTORY_UNAVAILABLE","message":"Stay inventory is unavailable"}}', false);
+      const insufficientStock: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"INSUFFICIENT_STOCK","message":"Requested quantity exceeds stock"}}', false);
+      const invalidQuote: ApiErrorInfo = mapApiError(422,
+        '{"error":{"code":"INVALID_QUOTE","message":"Invalid quote"}}', false);
+      const quoteExpired: ApiErrorInfo = mapApiError(409,
+        '{"error":{"code":"QUOTE_EXPIRED","message":"Quote expired"}}', false);
+      const productNotFound: ApiErrorInfo = mapApiError(404,
+        '{"error":{"code":"PRODUCT_NOT_FOUND","message":"Product not found"}}', false);
       const refundWindowClosed: ApiErrorInfo = mapApiError(409,
         '{"error":{"code":"REFUND_WINDOW_CLOSED","message":"Refund window closed"}}', false);
       const rescheduleConflict: ApiErrorInfo = mapApiError(409,
@@ -192,11 +208,15 @@ export default function tourismBusinessRulesTest() {
       expect(usernameTaken.statusCode).assertEqual(409);
       expect(usernameTaken.serverCode).assertEqual('USERNAME_TAKEN');
       expect(scheduleConflict.userMessage)
-        .assertEqual('所选时段与已有门票或预约重叠，请更换时段或先处理已有订单');
+        .assertEqual('所选时段与已有有效预约重叠，请更换时段或先处理已有预约');
       expect(repeatedAction.userMessage)
         .assertEqual('该操作已完成或请求内容已变化，请刷新后重试');
       expect(cancelledConfirmation.userMessage).assertEqual('预约状态已更新，当前无法确认');
       expect(unavailableInventory.userMessage).assertEqual('当前库存不足，请重新查询可用时段');
+      expect(insufficientStock.userMessage).assertEqual('商品余量不足，已为你刷新商品与购物车');
+      expect(invalidQuote.userMessage).assertEqual('门票报价凭证无效，请重新获取价格');
+      expect(quoteExpired.userMessage).assertEqual('门票报价已过期，请重新获取价格');
+      expect(productNotFound.userMessage).assertEqual('商品已下架，已为你刷新目录');
       expect(refundWindowClosed.userMessage).assertEqual('已超过服务端返回的退票截止时间，当前无法退款');
       expect(rescheduleConflict.userMessage).assertEqual('改签期间订单或库存已变化，请刷新后重试');
       expect(orderNotRefundable.userMessage).assertEqual('仅已支付的有效订单可以申请退款');
@@ -365,11 +385,14 @@ export default function tourismBusinessRulesTest() {
       after.id = 'slot-1';
       after.remaining = 3;
       after.unit_price_cents = 12000;
+      after.visit_date = '2026-09-06';
+      const slotKey: string = ticketSlotRenderKey(after);
 
       expect(detectInventoryChange(before, after).changed).assertTrue();
       expect(detectInventoryChange(before, after).priceChanged).assertTrue();
       after.remaining = 0;
       expect(detectInventoryChange(before, after).depleted).assertTrue();
+      expect(ticketSlotRenderKey(after) === slotKey).assertFalse();
     });
 
     it('reusesIdempotencyKeyUntilOperationSettles', 0, () => {
@@ -484,6 +507,12 @@ export default function tourismBusinessRulesTest() {
       expect(findTimelineConflict([first, second]).conflicted).assertTrue();
       second.start_at = '2026-09-02T10:00:00';
       expect(findTimelineConflict([first, second]).conflicted).assertFalse();
+      const itemKey: string = itineraryItemRenderKey(second);
+      second.title = '替换后的演出';
+      expect(itineraryItemRenderKey(second) === itemKey).assertFalse();
+      const legacyAdmission: ItineraryItem = new ItineraryItem();
+      legacyAdmission.kind = 'COMMITMENT';
+      expect(visibleItineraryItems([first, legacyAdmission]).length).assertEqual(1);
     });
 
     it('acceptsReplanOnlyWhenLockedItemsStayFixed', 0, () => {
@@ -519,6 +548,7 @@ export default function tourismBusinessRulesTest() {
       session.id = 'session-1';
       session.status = SessionStatus.OPEN;
       session.remaining = 4;
+      const sessionKey: string = experienceSessionRenderKey(session);
       expect(validateBookingDate('2026-09-02').valid).assertTrue();
       expect(validateBookingDate('2026-02-30').valid).assertFalse();
       expect(validateSessionReservation(session, 3).valid).assertTrue();
@@ -528,6 +558,7 @@ export default function tourismBusinessRulesTest() {
       updated.status = SessionStatus.OPEN;
       updated.remaining = 0;
       expect(detectSessionInventoryChange(session, updated).depleted).assertTrue();
+      expect(experienceSessionRenderKey(updated) === sessionKey).assertFalse();
     });
 
     it('usesAsiaShanghaiBusinessDates', 0, () => {
@@ -643,20 +674,26 @@ export default function tourismBusinessRulesTest() {
 
     it('appliesCampaignPriceAndCartInventoryRules', 0, () => {
       const product: ShopProduct = new ShopProduct();
+      product.id = 'product-1';
       product.price_cents = 10000;
       product.effective_price_cents = 8000;
       product.stock = 3;
+      const initialProductKey: string = shopProductRenderKey(product);
       expect(effectiveProductPrice(product)).assertEqual(8000);
       expect(validateCartQuantity(3, product.stock).valid).assertTrue();
       expect(validateCartQuantity(4, product.stock).valid).assertFalse();
       product.effective_price_cents = 12000;
       expect(effectiveProductPrice(product)).assertEqual(10000);
+      product.stock = 2;
+      expect(shopProductRenderKey(product) === initialProductKey).assertFalse();
     });
 
     it('validatesServerAuthoritativeCheckoutAndTerminalOrders', 0, () => {
       const item: CartItem = new CartItem();
+      item.id = 'cart-item-1';
       item.quantity = 2;
       item.stock = 5;
+      const initialCartKey: string = cartItemRenderKey(item);
       expect(validateCheckout([item], '游客', '13800138000', '浙江省', '杭州市', '游客中心自提点').valid)
         .assertTrue();
       expect(validateCheckout([], '游客', '13800138000', '浙江省', '杭州市', '游客中心自提点').valid)
@@ -664,6 +701,19 @@ export default function tourismBusinessRulesTest() {
       expect(canPayShopOrder(ShopOrderStatus.PENDING_PAYMENT)).assertTrue();
       expect(canPayShopOrder(ShopOrderStatus.EXPIRED)).assertFalse();
       expect(canPayShopOrder(ShopOrderStatus.PAID)).assertFalse();
+      item.quantity = 3;
+      expect(cartItemRenderKey(item) === initialCartKey).assertFalse();
+      const order: ShopOrder = new ShopOrder();
+      order.id = 'shop-order-1';
+      const pendingOrderKey: string = shopOrderRenderKey(order);
+      order.status = ShopOrderStatus.PAID;
+      expect(shopOrderRenderKey(order) === pendingOrderKey).assertFalse();
+      const reward: PointsReward = new PointsReward();
+      reward.id = 'reward-1';
+      reward.stock = 2;
+      const rewardKey: string = pointsRewardRenderKey(reward);
+      reward.stock = 1;
+      expect(pointsRewardRenderKey(reward) === rewardKey).assertFalse();
     });
 
     it('validatesPointsRedeemAndDemoShare', 0, () => {

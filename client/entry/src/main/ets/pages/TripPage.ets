@@ -25,9 +25,11 @@ import {
   itineraryActionLabel,
   itineraryCrowdLabel,
   itineraryKindLabel,
+  itineraryItemRenderKey,
   itinerarySeverityLabel,
   localizeItineraryText,
   localizeItineraryTexts,
+  visibleItineraryItems,
   validateItineraryGenerateInput
 } from '../utils/GuideRules';
 
@@ -58,6 +60,7 @@ export struct TripPage {
       const cached: Itinerary | null = TravelPersistenceStore.getInstance().loadItinerary(
         AuthStore.getInstance().getUserId());
       if (cached !== null) {
+        cached.items = visibleItineraryItems(cached.items);
         this.itinerary = cached;
         this.syncCurrentItinerary(cached);
         this.operationMessage = '已恢复本地缓存行程，联网后可刷新版本';
@@ -122,6 +125,9 @@ export struct TripPage {
   }
 
   private async generate(): Promise<void> {
+    if (this.operationBusy) {
+      return;
+    }
     if (!this.loggedIn) {
       this.requireLogin = true;
       this.contentState = ContentState.NO_PERMISSION;
@@ -145,6 +151,7 @@ export struct TripPage {
       this.operationMessage = this.errorText(result.error);
       return;
     }
+    result.data.items = visibleItineraryItems(result.data.items);
     this.itinerary = result.data;
     this.syncCurrentItinerary(result.data);
     this.conflictResult = null;
@@ -154,13 +161,14 @@ export struct TripPage {
   }
 
   private async refreshItinerary(): Promise<void> {
-    if (this.itinerary === null) {
+    if (this.operationBusy || this.itinerary === null) {
       return;
     }
     this.operationBusy = true;
     const result: NetworkResult<Itinerary> = await this.service.getItinerary(this.itinerary.id);
     this.operationBusy = false;
     if (result.successful && result.data !== null) {
+      result.data.items = visibleItineraryItems(result.data.items);
       this.itinerary = result.data;
       this.syncCurrentItinerary(result.data);
       this.contentState = result.data.items.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
@@ -172,7 +180,7 @@ export struct TripPage {
   }
 
   private async checkConflicts(): Promise<void> {
-    if (this.itinerary === null) {
+    if (this.operationBusy || this.itinerary === null) {
       return;
     }
     this.operationBusy = true;
@@ -190,7 +198,7 @@ export struct TripPage {
   }
 
   private async replan(): Promise<void> {
-    if (this.itinerary === null) {
+    if (this.operationBusy || this.itinerary === null) {
       return;
     }
     const previous: Itinerary = this.itinerary;
@@ -210,6 +218,7 @@ export struct TripPage {
       this.operationMessage = assessment.message;
       return;
     }
+    result.data.items = visibleItineraryItems(result.data.items);
     this.itinerary = result.data;
     this.syncCurrentItinerary(result.data);
     this.conflictResult = null;
@@ -221,24 +230,72 @@ export struct TripPage {
     return formatShanghaiTime(value);
   }
 
+  private companionLabel(): string {
+    if (this.companionType === 'solo') {
+      return '独自';
+    }
+    if (this.companionType === 'friends') {
+      return '朋友';
+    }
+    if (this.companionType === 'senior') {
+      return '长者';
+    }
+    return '家庭';
+  }
+
+  private fitnessLabel(): string {
+    if (this.fitnessLevel === 'low') {
+      return '低';
+    }
+    if (this.fitnessLevel === 'high') {
+      return '高';
+    }
+    return '中';
+  }
+
+  private setCompanionType(value: string, label: string): void {
+    this.companionType = value;
+    this.conflictResult = null;
+    this.operationMessage = `同行人群已改为“${label}”，重新生成后应用到新行程`;
+  }
+
+  private setFitnessLevel(value: string, label: string): void {
+    this.fitnessLevel = value;
+    this.conflictResult = null;
+    this.operationMessage = `体力等级已改为“${label}”，重新生成后应用到新行程`;
+  }
+
   @Builder
-  private optionButton(label: string, value: string, selectedValue: string, kind: string) {
+  private companionButton(label: string, value: string) {
     Button(label)
+      .layoutWeight(1)
+      .enabled(!this.operationBusy)
       .fontSize(12)
-      .fontColor(selectedValue === value ? Color.White : $r('app.color.primary'))
-      .backgroundColor(selectedValue === value ? $r('app.color.primary') : $r('app.color.surface_tint'))
+      // 直接读取 @State，避免把选中值作为普通 @Builder 参数传入后界面不重绘。
+      .fontColor(this.companionType === value ? Color.White : $r('app.color.primary'))
+      .backgroundColor(this.companionType === value ? $r('app.color.primary') : $r('app.color.surface_tint'))
       .onClick(() => {
-        if (kind === 'companion') {
-          this.companionType = value;
-        } else {
-          this.fitnessLevel = value;
-        }
+        this.setCompanionType(value, label);
+      })
+  }
+
+  @Builder
+  private fitnessButton(label: string, value: string) {
+    Button(label)
+      .layoutWeight(1)
+      .enabled(!this.operationBusy)
+      .fontSize(12)
+      .fontColor(this.fitnessLevel === value ? Color.White : $r('app.color.primary'))
+      .backgroundColor(this.fitnessLevel === value ? $r('app.color.primary') : $r('app.color.surface_tint'))
+      .onClick(() => {
+        this.setFitnessLevel(value, label);
       })
   }
 
   @Builder
   private interestButton(label: string, value: string) {
     Button(label)
+      .enabled(!this.operationBusy)
       .fontSize(12)
       .fontColor(this.hasInterest(value) ? Color.White : $r('app.color.primary'))
       .backgroundColor(this.hasInterest(value) ? $r('app.color.primary') : $r('app.color.surface_tint'))
@@ -315,6 +372,7 @@ export struct TripPage {
 
           Row({ space: 8 }) {
             TextInput({ text: this.visitDate, placeholder: 'YYYY-MM-DD' })
+              .enabled(!this.operationBusy)
               .layoutWeight(1)
               .fontColor($r('app.color.text_primary'))
               .backgroundColor($r('app.color.page_background'))
@@ -322,6 +380,7 @@ export struct TripPage {
                 this.visitDate = value;
               })
             TextInput({ text: this.startTime, placeholder: 'HH:mm' })
+              .enabled(!this.operationBusy)
               .width(100)
               .fontColor($r('app.color.text_primary'))
               .backgroundColor($r('app.color.page_background'))
@@ -333,11 +392,11 @@ export struct TripPage {
 
           Row({ space: 8 }) {
             Text('游玩时长').fontColor($r('app.color.text_primary')).layoutWeight(1)
-            Button('−60').fontSize(11).onClick(() => {
+            Button('−60').enabled(!this.operationBusy).fontSize(11).onClick(() => {
               this.durationMinutes = Math.max(60, this.durationMinutes - 60);
             })
             Text(`${this.durationMinutes} 分钟`).fontColor($r('app.color.primary'))
-            Button('+60').fontSize(11).onClick(() => {
+            Button('+60').enabled(!this.operationBusy).fontSize(11).onClick(() => {
               this.durationMinutes = Math.min(720, this.durationMinutes + 60);
             })
           }
@@ -354,10 +413,10 @@ export struct TripPage {
 
           Text('同行人群').width('100%').fontSize(14).fontColor($r('app.color.text_primary'))
           Row({ space: 7 }) {
-            this.optionButton('独自', 'solo', this.companionType, 'companion')
-            this.optionButton('家庭', 'family', this.companionType, 'companion')
-            this.optionButton('朋友', 'friends', this.companionType, 'companion')
-            this.optionButton('长者', 'senior', this.companionType, 'companion')
+            this.companionButton('独自', 'solo')
+            this.companionButton('家庭', 'family')
+            this.companionButton('朋友', 'friends')
+            this.companionButton('长者', 'senior')
           }
           .width('100%')
 
@@ -365,9 +424,9 @@ export struct TripPage {
             Column({ space: 5 }) {
               Text('体力等级').fontSize(14).fontColor($r('app.color.text_primary'))
               Row({ space: 6 }) {
-                this.optionButton('低', 'low', this.fitnessLevel, 'fitness')
-                this.optionButton('中', 'medium', this.fitnessLevel, 'fitness')
-                this.optionButton('高', 'high', this.fitnessLevel, 'fitness')
+                this.fitnessButton('低', 'low')
+                this.fitnessButton('中', 'medium')
+                this.fitnessButton('高', 'high')
               }
             }
             .alignItems(HorizontalAlign.Start)
@@ -375,6 +434,7 @@ export struct TripPage {
             Column({ space: 5 }) {
               Text('无障碍路线').fontSize(14).fontColor($r('app.color.text_primary'))
               Toggle({ type: ToggleType.Switch, isOn: this.accessible })
+                .enabled(!this.operationBusy)
                 .selectedColor($r('app.color.primary'))
                 .onChange((value: boolean) => {
                   this.accessible = value;
@@ -392,7 +452,12 @@ export struct TripPage {
           }
           .width('100%')
 
-          Button(this.operationBusy ? '生成中…' : '生成真实规则行程')
+          Text(`当前偏好：${this.companionLabel()}同行 · 体力${this.fitnessLabel()}；修改后请重新生成行程`)
+            .width('100%')
+            .fontSize(11)
+            .fontColor($r('app.color.primary'))
+
+          Button(this.operationBusy ? '生成中…' : (this.itinerary === null ? '生成真实规则行程' : '按新偏好重新生成'))
             .enabled(!this.operationBusy)
             .width('100%')
             .height(46)
@@ -448,7 +513,7 @@ export struct TripPage {
             }
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
-            Button('刷新版本').fontSize(11).onClick(() => {
+            Button('刷新版本').enabled(!this.operationBusy).fontSize(11).onClick(() => {
               this.refreshItinerary();
             })
           }
@@ -474,7 +539,7 @@ export struct TripPage {
 
           ForEach(this.itinerary.items, (item: ItineraryItem) => {
             this.timelineItem(item)
-          }, (item: ItineraryItem) => item.id)
+          }, (item: ItineraryItem) => itineraryItemRenderKey(item))
 
           Text(findTimelineConflict(this.itinerary.items).message)
             .width('100%')
@@ -483,6 +548,7 @@ export struct TripPage {
 
           Row({ space: 8 }) {
             Button('服务端冲突检查')
+              .enabled(!this.operationBusy)
               .layoutWeight(1)
               .fontSize(12)
               .fontColor($r('app.color.primary'))
@@ -491,6 +557,7 @@ export struct TripPage {
                 this.checkConflicts();
               })
             Button('按最新模拟人流重排')
+              .enabled(!this.operationBusy)
               .layoutWeight(1)
               .fontSize(12)
               .fontColor(Color.White)

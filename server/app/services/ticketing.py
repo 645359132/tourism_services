@@ -16,7 +16,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.config import Settings
 from app.core.errors import AppError
-from app.core.security import create_ticket_qr, decode_token
+from app.core.security import create_ticket_qr, create_ticket_quote, decode_token
 from app.db.models.ticketing import (
     ORDER_CANCELLED,
     ORDER_EXPIRED,
@@ -52,7 +52,6 @@ from app.schemas.ticketing import (
 )
 from app.services.reservations import (
     acquire_user_schedule_lock,
-    check_marketplace_schedule_conflict,
     expire_reservation_holds,
 )
 
@@ -316,15 +315,55 @@ async def quote_ticket_order(
     if quantity > remaining:
         raise _error(409, "INSUFFICIENT_INVENTORY", "Not enough ticket inventory")
     unit_price, explanation = await calculate_unit_price(session, slot)
+    quote_token, expires_at, quote_id = create_ticket_quote(
+        slot_id=slot.id,
+        quantity=quantity,
+        unit_price_cents=unit_price,
+        settings=settings,
+    )
     return QuoteResponse(
-        id=str(uuid4()),
+        id=quote_id,
         slot_id=str(slot.id),
+        ticket_type_id=str(slot.ticket_type_id),
+        visit_date=slot.visit_date,
+        start_time=slot.start_time,
+        end_time=slot.end_time,
         quantity=quantity,
         unit_price_cents=unit_price,
         total_cents=unit_price * quantity,
-        expires_at=datetime.now(UTC) + timedelta(seconds=settings.ticket_quote_ttl_seconds),
+        expires_at=expires_at,
+        quote_token=quote_token,
         pricing_explanation=explanation,
     )
+
+
+def _validated_quote_unit_price(
+    *,
+    quote_token: str,
+    slot_id: UUID,
+    quantity: int,
+    settings: Settings,
+) -> int:
+    try:
+        claims = decode_token(
+            quote_token,
+            expected_type="ticket_quote",
+            settings=settings,
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise _error(409, "QUOTE_EXPIRED", "Ticket quote has expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise _error(422, "INVALID_QUOTE", "Ticket quote token is invalid") from exc
+    unit_price = claims.get("unit_price_cents")
+    if (
+        claims.get("purpose") != "ticket_purchase"
+        or claims.get("sub") != str(slot_id)
+        or claims.get("quantity") != quantity
+        or type(unit_price) is not int
+        or unit_price < 0
+    ):
+        raise _error(409, "QUOTE_MISMATCH", "Ticket quote does not match this order")
+    return unit_price
 
 
 async def expire_pending_orders(
@@ -381,13 +420,19 @@ async def create_ticket_order(
     user: User,
     slot_id: UUID,
     quantity: int,
+    quote_token: str,
     idempotency_key: str,
     settings: Settings,
 ) -> TicketOrder:
     actor_id = user.id
     await expire_pending_orders(session)
     await session.commit()
-    request_hash = _hash_payload({"quantity": quantity, "slot_id": str(slot_id)})
+    request_hash = _hash_payload(
+        {
+            "quantity": quantity,
+            "slot_id": str(slot_id),
+        }
+    )
     existing = await session.scalar(
         select(TicketOrder).where(
             TicketOrder.user_id == actor_id,
@@ -405,7 +450,13 @@ async def create_ticket_order(
     slot = await _get_slot(session, slot_id)
     if slot.visit_date < _scenic_today():
         raise _error(409, "SLOT_CLOSED", "Ticket slot is no longer available")
-    unit_price, _ = await calculate_unit_price(session, slot)
+    # 同一 slot coordination lock 内验签并兑现签名价格, 库存仍以当前账本为准。
+    unit_price = _validated_quote_unit_price(
+        quote_token=quote_token,
+        slot_id=slot_id,
+        quantity=quantity,
+        settings=settings,
+    )
     await acquire_user_schedule_lock(session, actor_id)
     # 跨资源冲突判断和过期预约释放必须处于同一用户时程锁事务中。
     await expire_reservation_holds(session, user_id=actor_id)
@@ -424,13 +475,8 @@ async def create_ticket_order(
         loaded = await _load_order(session, order_id)
         assert loaded is not None
         return loaded
-    await check_marketplace_schedule_conflict(
-        session,
-        user_id=actor_id,
-        starts_at=_slot_start_utc(slot),
-        ends_at=_slot_end_utc(slot),
-        buffer_minutes=settings.reservation_walking_buffer_minutes,
-    )
+    # 门票时段表达“可入园窗口”; 它不是会独占游客时间的园内活动。游客理应能先约演出
+    # 再买覆盖该时段的门票; 因此这里只校验场次有效性与共享库存; 不做日程互斥。
     reserved = await session.execute(
         update(TicketInventory)
         .execution_options(synchronize_session=False)
@@ -839,7 +885,6 @@ async def reschedule_ticket_order(
     user: User,
     target_slot_id: UUID,
     idempotency_key: str,
-    walking_buffer_minutes: int = 10,
 ) -> TicketOrder:
     actor_id = user.id
     actor_is_admin = _is_admin(user)
@@ -902,13 +947,7 @@ async def reschedule_ticket_order(
         raise _error(409, "TICKET_TYPE_MISMATCH", "Target slot ticket type differs")
     if target.visit_date < _scenic_today():
         raise _error(409, "SLOT_CLOSED", "Target slot is no longer available")
-    await check_marketplace_schedule_conflict(
-        session,
-        user_id=order.user_id,
-        starts_at=_slot_start_utc(target),
-        ends_at=_slot_end_utc(target),
-        buffer_minutes=walking_buffer_minutes,
-    )
+    # 改签后的门票仍是入园资格; 不应与园内演出、项目或用餐预约互斥。
     target_unit_price, _ = await calculate_unit_price(session, target)
     if target_unit_price != item.unit_price_cents:
         raise _error(

@@ -27,6 +27,7 @@ import {
   BookingRuleResult,
   SessionInventoryChange,
   detectSessionInventoryChange,
+  experienceSessionRenderKey,
   hasReservationConflict,
   isCurrentItinerarySuggestion,
   isTerminalQueueStatus,
@@ -75,6 +76,7 @@ export struct ExperienceBookingView {
   private joinPending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private leavePending: PendingIdempotentOperation = new PendingIdempotentOperation();
   private fastPassPending: PendingIdempotentOperation = new PendingIdempotentOperation();
+  private sessionRequestVersion: number = 0;
 
   aboutToAppear(): void {
     this.loadExperiences();
@@ -123,6 +125,14 @@ export struct ExperienceBookingView {
       }
     }
     return null;
+  }
+
+  private clearSessionSelection(message: string = ''): void {
+    // 项目或日期变化后立即让旧场次失效；版本号同时拒绝飞行中的迟到响应。
+    this.sessionRequestVersion++;
+    this.selectedSessionId = '';
+    this.sessions = [];
+    this.inventoryNotice = message;
   }
 
   private queuedExperience(): Experience | null {
@@ -191,16 +201,23 @@ export struct ExperienceBookingView {
   }
 
   private async loadSessions(): Promise<void> {
-    const dateResult: BookingRuleResult = validateBookingDate(this.visitDate);
+    const requestedExperienceId: string = this.selectedExperienceId;
+    const requestedDate: string = this.visitDate;
+    const dateResult: BookingRuleResult = validateBookingDate(requestedDate);
     if (!dateResult.valid) {
       this.contentState = ContentState.ERROR;
       this.errorMessage = dateResult.message;
       return;
     }
+    const requestVersion: number = ++this.sessionRequestVersion;
     const prior: ExperienceSession | null = this.selectedSession();
     this.contentState = ContentState.LOADING;
     const result: NetworkResult<ExperienceSessionListResponse> =
-      await this.service.listSessions(this.selectedExperienceId, this.visitDate);
+      await this.service.listSessions(requestedExperienceId, requestedDate);
+    if (requestVersion !== this.sessionRequestVersion ||
+      requestedExperienceId !== this.selectedExperienceId || requestedDate !== this.visitDate) {
+      return;
+    }
     if (!result.successful || result.data === null) {
       this.contentState = this.stateForError(result.error);
       this.errorMessage = this.errorText(result.error);
@@ -220,14 +237,16 @@ export struct ExperienceBookingView {
     this.contentState = this.sessions.length === 0 ? ContentState.EMPTY : ContentState.CONTENT;
   }
 
-  private async loadReservations(): Promise<void> {
+  private async loadReservations(): Promise<boolean> {
     if (!this.loggedIn) {
-      return;
+      return false;
     }
     const result: NetworkResult<ReservationListResponse> = await this.service.listReservations();
     if (result.successful && result.data !== null) {
       this.reservations = result.data.items;
+      return true;
     }
+    return false;
   }
 
   private replaceReservation(value: Reservation): void {
@@ -260,15 +279,40 @@ export struct ExperienceBookingView {
       this.operationMessage = validation.message;
       return;
     }
-    if (hasReservationConflict(this.reservations, session.starts_at, session.ends_at)) {
-      this.operationMessage = '该场次与已有预约冲突，请更换场次';
+    const requestedSessionId: string = session.id;
+    const requestedExperienceId: string = this.selectedExperienceId;
+    const requestedDate: string = this.visitDate;
+    const requestedPartySize: number = this.partySize;
+    this.operationBusy = true;
+    const reservationsCurrent: boolean = await this.loadReservations();
+    if (!reservationsCurrent) {
+      this.operationBusy = false;
+      this.operationMessage = '无法刷新已有预约，请检查网络后重试';
       return;
     }
-    this.operationBusy = true;
-    const operationId: string = `${session.id}:${this.partySize}`;
+    if (this.selectedSessionId !== requestedSessionId ||
+      this.selectedExperienceId !== requestedExperienceId || this.visitDate !== requestedDate ||
+      this.partySize !== requestedPartySize) {
+      this.operationBusy = false;
+      this.operationMessage = '项目、日期或场次已变化，请按当前选择重新预约';
+      return;
+    }
+    const refreshedValidation: BookingRuleResult =
+      validateSessionReservation(this.selectedSession(), requestedPartySize);
+    if (!refreshedValidation.valid) {
+      this.operationBusy = false;
+      this.operationMessage = refreshedValidation.message;
+      return;
+    }
+    if (hasReservationConflict(this.reservations, session.starts_at, session.ends_at)) {
+      this.operationBusy = false;
+      this.operationMessage = '该场次与已有演出、餐饮或住宿办理时段存在时间重叠，请更换场次';
+      return;
+    }
+    const operationId: string = `${session.id}:${requestedPartySize}`;
     const key: string = this.reservationPending.getOrCreate(operationId, 'experience-reservation');
-    const result: NetworkResult<Reservation> = await this.service.createReservation(session.id, this.partySize, key);
-    this.operationBusy = false;
+    const result: NetworkResult<Reservation> =
+      await this.service.createReservation(session.id, requestedPartySize, key);
     if (result.successful && result.data !== null) {
       this.reservationPending.resolveSuccess();
       this.replaceReservation(result.data);
@@ -279,6 +323,7 @@ export struct ExperienceBookingView {
       this.operationMessage = this.errorText(result.error);
       await this.loadSessions();
     }
+    this.operationBusy = false;
   }
 
   private async confirmReservation(value: Reservation): Promise<void> {
@@ -288,15 +333,20 @@ export struct ExperienceBookingView {
     this.operationBusy = true;
     const key: string = this.confirmPending.getOrCreate(value.id, 'reservation-confirm');
     const result: NetworkResult<Reservation> = await this.service.confirmReservation(value.id, key);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.confirmPending.resolveSuccess();
       this.replaceReservation(result.data);
       this.operationMessage = `预约 ${result.data.booking_no} 已确认`;
     } else {
       this.resolveFailure(this.confirmPending, result.error);
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadReservations();
+        await this.loadSessions();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async cancelReservation(value: Reservation): Promise<void> {
@@ -312,7 +362,6 @@ export struct ExperienceBookingView {
     const key: string = this.cancelPending.getOrCreate(operationId, 'reservation-cancel');
     const result: NetworkResult<Reservation> = await this.service.cancelReservation(
       value.id, this.cancelReason.trim(), key);
-    this.operationBusy = false;
     if (result.successful && result.data !== null) {
       this.cancelPending.resolveSuccess();
       this.replaceReservation(result.data);
@@ -320,8 +369,14 @@ export struct ExperienceBookingView {
       await this.loadSessions();
     } else {
       this.resolveFailure(this.cancelPending, result.error);
-      this.operationMessage = this.errorText(result.error);
+      const message: string = this.errorText(result.error);
+      if (result.error !== null && result.error.statusCode === 409) {
+        await this.loadReservations();
+        await this.loadSessions();
+      }
+      this.operationMessage = message;
     }
+    this.operationBusy = false;
   }
 
   private async joinQueue(): Promise<void> {
@@ -515,10 +570,11 @@ export struct ExperienceBookingView {
         .fontSize(11).fontColor(this.selectedExperienceId === value.id ? Color.White : $r('app.color.warning'))
     }
     .width(190).height(96).padding(13).alignItems(HorizontalAlign.Start).borderRadius(16)
+    .enabled(!this.operationBusy)
     .backgroundColor(this.selectedExperienceId === value.id ? $r('app.color.primary') : $r('app.color.surface'))
     .onClick(() => {
       this.selectedExperienceId = value.id;
-      this.selectedSessionId = '';
+      this.clearSessionSelection();
       this.loadSessions();
     })
   }
@@ -555,7 +611,8 @@ export struct ExperienceBookingView {
       Column({ space: 14 }) {
         Text('项目与演出').width('100%').fontSize(20).fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
-        Text('场次、库存与预约来自真实 API；队列经真实 REST/WebSocket 传输，排队算法和提醒来源为演示适配器。')
+        Text('场次、库存与预约来自真实 API；队列经真实 REST/WebSocket 传输。' +
+          '仅真实时间重叠阻止预约，步行缓冲只作行程建议。')
           .width('100%').fontSize(11).fontColor($r('app.color.warning'))
 
         Scroll() {
@@ -567,12 +624,27 @@ export struct ExperienceBookingView {
 
         Row({ space: 8 }) {
           TextInput({ text: this.visitDate, placeholder: 'YYYY-MM-DD' }).layoutWeight(1)
+            .enabled(!this.operationBusy)
             .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.surface'))
-            .onChange((value: string) => { this.visitDate = value; })
-          Button('查询场次').fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => {
+            .onChange((value: string) => {
+              if (value === this.visitDate) {
+                return;
+              }
+              this.visitDate = value;
+              this.clearSessionSelection('日期已修改，正在查询该日期的项目场次');
+              if (validateBookingDate(value).valid) {
+                this.loadSessions();
+              } else {
+                this.contentState = ContentState.EMPTY;
+                this.errorMessage = '';
+              }
+            })
+          Button('查询场次').enabled(!this.operationBusy)
+            .fontColor(Color.White).backgroundColor($r('app.color.primary')).onClick(() => {
             this.loadSessions();
           })
-          Button('刷新库存').fontColor($r('app.color.primary')).backgroundColor($r('app.color.surface_tint'))
+          Button('刷新库存').enabled(!this.operationBusy)
+            .fontColor($r('app.color.primary')).backgroundColor($r('app.color.surface_tint'))
             .onClick(() => { this.loadSessions(); })
         }.width('100%')
 
@@ -599,16 +671,19 @@ export struct ExperienceBookingView {
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Text(this.selectedSessionId === session.id ? '已选' : '选择').fontColor($r('app.color.primary'))
             }.width('100%').padding(13).borderRadius(14).backgroundColor($r('app.color.surface'))
+              .enabled(!this.operationBusy)
               .border({ width: this.selectedSessionId === session.id ? 2 : 0, color: $r('app.color.primary') })
               .onClick(() => { if (session.status === SessionStatus.OPEN && session.remaining > 0) {
                 this.selectedSessionId = session.id; } })
-          }, (session: ExperienceSession) => session.id)
+          }, (session: ExperienceSession) => experienceSessionRenderKey(session))
 
           Row({ space: 8 }) {
             Text('同行人数').fontColor($r('app.color.text_primary')).layoutWeight(1)
-            Button('−').onClick(() => { this.partySize = Math.max(1, this.partySize - 1); })
+            Button('−').enabled(!this.operationBusy)
+              .onClick(() => { this.partySize = Math.max(1, this.partySize - 1); })
             Text(this.partySize.toString()).fontColor($r('app.color.primary'))
-            Button('+').onClick(() => { this.partySize = Math.min(8, this.partySize + 1); })
+            Button('+').enabled(!this.operationBusy)
+              .onClick(() => { this.partySize = Math.min(8, this.partySize + 1); })
           }.width('100%')
           Row({ space: 8 }) {
             Button(this.operationBusy ? '处理中…' : '预约所选场次').enabled(!this.operationBusy)

@@ -459,6 +459,7 @@ def order_response(order: ShopOrder) -> ShopOrderResponse:
         is_demo=True,
         created_at=_aware(order.created_at),
         paid_at=None if order.paid_at is None else _aware(order.paid_at),
+        expires_at=None if order.expires_at is None else _aware(order.expires_at),
     )
 
 

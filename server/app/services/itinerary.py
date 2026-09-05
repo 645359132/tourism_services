@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -22,7 +22,6 @@ from app.db.models.guide import (
     PlanRun,
     RouteNode,
 )
-from app.db.models.ticketing import ORDER_PAID, TicketOrder, TicketOrderItem
 from app.db.models.user import User
 from app.providers.map import NoSchematicRouteError, SchematicMapProvider
 from app.providers.planner import PlanningPreferences, RulesPlanner, ScoredAttraction
@@ -57,6 +56,12 @@ def _aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _is_legacy_admission_commitment(item: ItineraryItem) -> bool:
+    """Identify ordinary admission windows persisted as commitments by older builds."""
+
+    return item.kind == "COMMITMENT" and item.ref_type == "ticket_order"
 
 
 def _overlaps(
@@ -96,7 +101,12 @@ async def _owned_itinerary(
 
 
 def itinerary_response(itinerary: Itinerary) -> ItineraryResponse:
-    items = sorted(itinerary.items, key=lambda item: item.ordinal)
+    # 旧版本把普通门票的开放窗口保存成独占行程项。响应边界先隐藏这类历史项,
+    # 避免升级后恢复的本地缓存继续展示“全天被门票占用”。
+    items = sorted(
+        (item for item in itinerary.items if not _is_legacy_admission_commitment(item)),
+        key=lambda item: item.ordinal,
+    )
     return ItineraryResponse(
         id=str(itinerary.id),
         name=itinerary.name,
@@ -126,60 +136,6 @@ def itinerary_response(itinerary: Itinerary) -> ItineraryResponse:
             for item in items
         ],
     )
-
-
-async def _ticket_commitments(
-    session: AsyncSession,
-    *,
-    user_id: UUID,
-    visit_date: date,
-) -> list[Commitment]:
-    orders = list(
-        await session.scalars(
-            select(TicketOrder)
-            .options(selectinload(TicketOrder.items).joinedload(TicketOrderItem.slot))
-            .where(
-                TicketOrder.user_id == user_id,
-                TicketOrder.status == ORDER_PAID,
-            )
-        )
-    )
-    commitments: list[Commitment] = []
-    for order in orders:
-        for item in order.items:
-            if item.slot.visit_date != visit_date:
-                continue
-            commitments.append(
-                Commitment(
-                    order_id=order.id,
-                    title=f"门票承诺: {item.ticket_type_name}",
-                    start_at=datetime.combine(
-                        visit_date,
-                        item.slot.start_time,
-                        tzinfo=SCENIC_TIMEZONE,
-                    ).astimezone(UTC),
-                    end_at=datetime.combine(
-                        visit_date,
-                        item.slot.end_time,
-                        tzinfo=SCENIC_TIMEZONE,
-                    ).astimezone(UTC),
-                )
-            )
-    # 已支付门票属于不可移动承诺; 稳定排序后先校验承诺自身, 避免生成无法兑现的行程。
-    commitments.sort(key=lambda commitment: (commitment.start_at, str(commitment.order_id)))
-    for previous, current in pairwise(commitments):
-        if _overlaps(
-            previous.start_at,
-            previous.end_at,
-            current.start_at,
-            current.end_at,
-        ):
-            raise _error(
-                422,
-                "MANDATORY_COMMITMENT_CONFLICT",
-                "已付款的门票安排存在时间重叠, 请先处理后再生成行程",
-            )
-    return commitments
 
 
 async def _scored_candidates(
@@ -282,11 +238,9 @@ async def generate_itinerary(
 ) -> Itinerary:
     provider = map_provider or SchematicMapProvider()
     rules = planner or RulesPlanner()
-    commitments = await _ticket_commitments(
-        session,
-        user_id=user.id,
-        visit_date=payload.visit_date,
-    )
+    # 普通门票时段表示可入园窗口, 不是游客时间线上的独占活动。真正定时且占座的
+    # 预约仍可在未来以显式业务类型进入 commitments, 但不能再从普通门票推导。
+    commitments: list[Commitment] = []
     preferences = PlanningPreferences(
         interests=frozenset(payload.interests),
         companion_type=payload.companion_type,
@@ -329,26 +283,6 @@ async def generate_itinerary(
         is_complete=True,
         unscheduled_reasons=[],
     )
-
-    # 创新点 3: 把已付款门票投影为 locked 项, 后续景点只能绕开, 不能自动移动或删除。
-    for commitment in commitments:
-        itinerary.items.append(
-            ItineraryItem(
-                ordinal=1,
-                kind="COMMITMENT",
-                ref_type="ticket_order",
-                ref_id=commitment.order_id,
-                attraction_id=None,
-                node_id=None,
-                title=commitment.title,
-                start_at=commitment.start_at,
-                end_at=commitment.end_at,
-                locked=True,
-                crowd_level="LOW",
-                walk_minutes=0,
-                explanation=["已锁定的付费门票安排"],
-            )
-        )
 
     cursor = plan_start - timedelta(minutes=DEFAULT_WALKING_BUFFER_MINUTES)
     current_node = entrance
@@ -463,50 +397,12 @@ async def check_itinerary_conflicts(
 ) -> ConflictCheckResponse:
     itinerary = await _owned_itinerary(session, itinerary_id=itinerary_id, user=user)
     provider = map_provider or SchematicMapProvider()
-    items = sorted(itinerary.items, key=lambda item: _aware(item.start_at))
+    items = sorted(
+        (item for item in itinerary.items if not _is_legacy_admission_commitment(item)),
+        key=lambda item: _aware(item.start_at),
+    )
     conflicts: list[ItineraryConflictResponse] = []
     suggestions: list[ConflictSuggestionResponse] = []
-    current_commitments = await _ticket_commitments(
-        session,
-        user_id=itinerary.user_id,
-        visit_date=itinerary.visit_date,
-    )
-    represented_commitments = {item.ref_id for item in items if item.kind == "COMMITMENT"}
-    # 行程生成后新购买的门票尚未投影为项目, 也必须与已有景点再次核对。
-    for commitment in current_commitments:
-        if commitment.order_id in represented_commitments:
-            continue
-        for item in items:
-            if item.kind != "ATTRACTION":
-                continue
-            item_start = _aware(item.start_at)
-            item_end = _aware(item.end_at)
-            if not _overlaps(
-                item_start,
-                item_end,
-                commitment.start_at,
-                commitment.end_at,
-            ):
-                continue
-            conflicts.append(
-                ItineraryConflictResponse(
-                    code="TICKET_OVERLAP",
-                    severity="ERROR",
-                    message="已付款的门票安排与该行程项目时间重叠",
-                    item_ids=[str(item.id)],
-                )
-            )
-            suggestions.append(
-                ConflictSuggestionResponse(
-                    action="START_AFTER_TICKET",
-                    message="将未锁定项目调整到付费门票安排之后",
-                    item_id=str(item.id),
-                    new_start_at=commitment.end_at + timedelta(minutes=walking_buffer_minutes),
-                    new_end_at=commitment.end_at
-                    + timedelta(minutes=walking_buffer_minutes)
-                    + (item_end - item_start),
-                )
-            )
     # 创新点 3: 沿排序后的时间轴同时检查重叠、路线可达性和步行缓冲;
     # locked 只决定“建议移动谁”, 不会让冲突被静默忽略。
     for previous, current in pairwise(items):
@@ -515,14 +411,9 @@ async def check_itinerary_conflicts(
         current_start = _aware(current.start_at)
         current_end = _aware(current.end_at)
         if _overlaps(previous_start, previous_end, current_start, current_end):
-            code = (
-                "TICKET_OVERLAP"
-                if previous.kind == "COMMITMENT" or current.kind == "COMMITMENT"
-                else "ITEM_OVERLAP"
-            )
             conflicts.append(
                 ItineraryConflictResponse(
-                    code=code,
+                    code="ITEM_OVERLAP",
                     severity="ERROR",
                     message="行程项目存在时间重叠",
                     item_ids=[str(previous.id), str(current.id)],
@@ -676,6 +567,9 @@ async def replan_itinerary(
     # expected_revision 是乐观并发令牌, 先快速拒绝基于旧页面发起的重排。
     if itinerary.revision != payload.expected_revision:
         raise _error(409, "REVISION_CONFLICT", "行程版本已发生变化")
+    legacy_admission_items = [
+        item for item in itinerary.items if _is_legacy_admission_commitment(item)
+    ]
     _, crowds = await latest_crowd_by_attraction(session)
     # 锁定项目不进入候选集合, 其原时间段稍后作为硬约束参与排程。
     unlocked_slots = sorted(
@@ -727,7 +621,7 @@ async def replan_itinerary(
             end_at=_aware(item.end_at),
         )
         for item in itinerary.items
-        if item.locked
+        if item.locked and not _is_legacy_admission_commitment(item)
     ]
     plan_start = datetime.combine(
         itinerary.visit_date,
@@ -861,6 +755,10 @@ async def replan_itinerary(
     if transitioned.rowcount != 1:
         await session.rollback()
         raise _error(409, "REVISION_CONFLICT", "行程版本已发生变化")
+    # 重排是现有行程的写入边界, 在版本 CAS 成功后顺手清除旧版普通门票项。
+    # 其他来源的真实 locked 项仍保留并继续参与排程。
+    for legacy_item in legacy_admission_items:
+        await session.delete(legacy_item)
     for (
         item,
         attraction,

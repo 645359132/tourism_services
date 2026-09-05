@@ -1,4 +1,4 @@
-import { CartItem, PointsReward, ShopOrderStatus, ShopProduct } from '../models/ShopModels';
+import { CartItem, PointsReward, ShopOrder, ShopOrderStatus, ShopProduct } from '../models/ShopModels';
 
 export class ShopRuleResult {
   valid: boolean;
@@ -15,6 +15,24 @@ export function effectiveProductPrice(product: ShopProduct): number {
     return product.effective_price_cents;
   }
   return product.price_cents;
+}
+
+export function shopProductRenderKey(product: ShopProduct): string {
+  // ShopProduct 不是 @Observed；库存或活动价变化时必须更换 ForEach key 才会重建卡片。
+  return `${product.id}:${product.stock}:${product.price_cents}:${product.effective_price_cents}:` +
+    `${product.campaign_id ?? ''}`;
+}
+
+export function cartItemRenderKey(item: CartItem): string {
+  return `${item.id}:${item.quantity}:${item.stock}:${item.unit_price_cents}:${item.subtotal_cents}`;
+}
+
+export function shopOrderRenderKey(order: ShopOrder): string {
+  return `${order.id}:${order.status}:${order.points_awarded}:${order.expires_at ?? ''}`;
+}
+
+export function pointsRewardRenderKey(reward: PointsReward): string {
+  return `${reward.id}:${reward.stock}:${reward.points_cost}`;
 }
 
 export function validateCartQuantity(quantity: number, stock: number): ShopRuleResult {
