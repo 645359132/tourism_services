@@ -317,6 +317,7 @@ MVP 的 API、事务、持久化、状态机、RBAC 和 WebSocket 都是可运�
 
 详细证据与复验范围：
 
+- [系统运行配置与 AI 提示词说明](docs/system-runtime-and-ai-prompts.md)
 - [全栈日常启动指南](docs/testing/full-stack-startup.md)
 - [Python 3.12 + DevEco Studio 轻量启动指南](docs/testing/lightweight-startup.md)
 - [全栈验收说明](docs/testing/acceptance.md)
